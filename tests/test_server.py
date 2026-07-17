@@ -66,6 +66,44 @@ def test_disarm_refused_while_airborne():
     assert "airborne" in out
 
 
+def test_move_intercardinal_direction():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    out = s.run_flight_tool("move", {"direction": "northeast", "distance_m": 30})
+    assert out.startswith("arrived")
+
+
+def test_move_unknown_direction_is_graceful():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    out = s.run_flight_tool("move", {"direction": "sideways", "distance_m": 10})
+    assert out.startswith("failed:")
+    assert "unknown direction" in out
+    assert "north" in out  # lists the valid options
+
+
+def test_orbit_requires_airborne():
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("orbit", {"radius_m": 15})
+    assert out.startswith("failed:")
+    assert "airborne" in out
+
+
+def test_orbit_when_flying():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 12})
+    out = s.run_flight_tool("orbit", {"radius_m": 15})
+    assert "flew a 15 m circle" in out
+    assert "alt 12.0 m" in out  # altitude held across the whole circle
+
+
+def test_orbit_radius_clamped():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 12})
+    out = s.run_flight_tool("orbit", {"radius_m": 5000})
+    assert "flew a 100 m circle" in out
+
+
 def test_readonly_server_hides_flight_tools():
     mcp = build_server(Settings(backend="fake"))
     names = {t.name for t in _tools(mcp)}
@@ -77,7 +115,8 @@ def test_readonly_server_hides_flight_tools():
 def test_actuation_server_exposes_flight_tools():
     mcp = build_server(Settings(backend="fake", enable_actuation=True))
     names = {t.name for t in _tools(mcp)}
-    for expected in ("arm", "takeoff", "land", "rtl", "goto", "move", "set_mode", "emergency_stop"):
+    for expected in ("arm", "takeoff", "land", "rtl", "goto", "move", "orbit",
+                     "set_mode", "emergency_stop"):
         assert expected in names
 
 

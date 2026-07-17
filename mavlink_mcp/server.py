@@ -117,6 +117,10 @@ class VehicleSession:
             return "blocked: another flight command is still running - wait for it to finish."
         try:
             res: CommandResult = self.tools[name].run(params)
+        except (ValueError, KeyError) as exc:
+            # bad/invalid argument (e.g. an unknown direction) - report it plainly so the
+            # model can correct itself, never surface a raw protocol error to the client.
+            return f"failed: {exc}\n{self.state_line()}"
         finally:
             self._act_lock.release()
         prefix = "" if res.ok else "failed: "
@@ -227,9 +231,16 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool()
     def move(direction: str, distance_m: float) -> str:
-        """Move a distance in metres: north/south/east/west (absolute) or
-        forward/backward/left/right (relative to heading). Blocks until arrival."""
+        """Move a distance in metres. Direction is one of: north, south, east, west,
+        northeast, northwest, southeast, southwest (absolute), or forward, backward,
+        left, right (relative to heading). Blocks until arrival."""
         return session.run_flight_tool("move", {"direction": direction, "distance_m": distance_m})
+
+    @mcp.tool()
+    def orbit(radius_m: float, clockwise: bool = True) -> str:
+        """Fly one full circle around the current position, holding altitude. radius_m is
+        required (1-100 m). Must already be airborne. Blocks until the circle is complete."""
+        return session.run_flight_tool("orbit", {"radius_m": radius_m, "clockwise": clockwise})
 
     @mcp.tool()
     def set_mode(mode: str) -> str:

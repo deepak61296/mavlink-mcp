@@ -22,6 +22,8 @@ class SafetyLimits:
     max_goto_distance_m: float = 2000.0
     max_speed_ms: float = 20.0
     max_wait_s: float = 120.0
+    min_orbit_radius_m: float = 1.0
+    max_orbit_radius_m: float = 100.0
     takeoff_start_timeout_s: float = 40.0   # keep retrying NAV_TAKEOFF until climbing (fresh-boot EKF)
 
 

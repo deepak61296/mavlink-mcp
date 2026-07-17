@@ -205,6 +205,29 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         return _goto_and_wait(f"{p['direction']} {dist:.0f}m",
                               Primitive("move", {"direction": str(p["direction"]), "distance_m": dist}))
 
+    def orbit(p: dict) -> CommandResult:
+        radius = clamp(float(p["radius_m"]), lim.min_orbit_radius_m, lim.max_orbit_radius_m)
+        cw = bool(p.get("clockwise", True))
+        tel = backend.get_telemetry()
+        if (tel.alt_rel_m or 0) <= 1.0:
+            return CommandResult.failure("not airborne - take off before orbiting")
+        if tel.lat_deg is None or tel.lon_deg is None:
+            return CommandResult.failure("no position fix for orbit")
+        if backend.get_telemetry().mode != "GUIDED":
+            backend.set_mode("GUIDED")
+        alt = tel.alt_rel_m
+        pts = geo.circle_points(tel.lat_deg, tel.lon_deg, radius, n=12, clockwise=cw)
+        for i, (plat, plon) in enumerate(pts + [pts[0]]):  # close the loop back to the start
+            if interrupt is not None and interrupt.is_set():
+                return CommandResult.failure("orbit interrupted")
+            res = _goto_and_wait(f"orbit {i}/{len(pts)}",
+                                 Primitive("goto", {"latitude": plat, "longitude": plon,
+                                                    "altitude_m": alt}))
+            if not res.ok:
+                return CommandResult.failure(f"orbit stopped at point {i}: {res.message}")
+        turn = "clockwise" if cw else "counter-clockwise"
+        return CommandResult.success(f"flew a {radius:.0f} m circle ({turn})")
+
     no_params = {"type": "object", "properties": {}}
     return [
         AgentTool("get_status", "Get current vehicle telemetry (mode, armed, altitude, battery, GPS).",
@@ -243,4 +266,11 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
                        "latitude": {"type": "number"}, "longitude": {"type": "number"},
                        "altitude_m": {"type": "number"}},
                    "required": ["latitude", "longitude"]}, RiskTier.HIGH, goto),
+        AgentTool("orbit", "Fly one full circle of a given radius (metres) around the current "
+                           "position, holding altitude. Must be airborne.",
+                  {"type": "object",
+                   "properties": {
+                       "radius_m": {"type": "number", "minimum": 1, "maximum": 100},
+                       "clockwise": {"type": "boolean"}},
+                   "required": ["radius_m"]}, RiskTier.HIGH, orbit),
     ]
