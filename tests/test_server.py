@@ -1,0 +1,90 @@
+"""Server-level tests against the in-memory FakeBackend (no SITL, no ports)."""
+from __future__ import annotations
+
+import pytest
+
+from mavlink_mcp.backends.fake import FakeBackend
+from mavlink_mcp.server import Settings, VehicleSession, build_server, is_local_sim_uri
+
+
+def _session(**kw) -> VehicleSession:
+    settings = Settings(backend="fake", **kw)
+    return VehicleSession(settings, FakeBackend())
+
+
+def test_local_sim_uri_detection():
+    assert is_local_sim_uri("tcp:127.0.0.1:5760")
+    assert is_local_sim_uri("udp:localhost:14550")
+    assert not is_local_sim_uri("tcp:192.168.1.50:5760")
+    assert not is_local_sim_uri("/dev/ttyACM0")
+    assert not is_local_sim_uri("serial:/dev/ttyUSB0:57600")
+
+
+def test_actuation_disabled_by_default():
+    s = _session()
+    assert "actuation is disabled" in s.actuation_block()
+
+
+def test_actuation_allowed_on_local_sim_when_enabled():
+    s = _session(enable_actuation=True)
+    assert s.actuation_block() is None
+
+
+def test_actuation_blocked_on_remote_without_flag():
+    s = _session(enable_actuation=True, conn="tcp:10.0.0.9:5760")
+    assert "real-vehicle" in s.actuation_block()
+    s2 = _session(enable_actuation=True, allow_real_vehicle=True, conn="tcp:10.0.0.9:5760")
+    assert s2.actuation_block() is None
+
+
+def test_run_flight_tool_blocked_message_when_disabled():
+    s = _session()
+    out = s.run_flight_tool("takeoff", {"altitude_m": 10})
+    assert out.startswith("blocked:")
+
+
+def test_takeoff_reaches_and_appends_state_line():
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("takeoff", {"altitude_m": 12})
+    assert "reached" in out
+    assert "[state: alt 12.0 m, GUIDED, armed]" in out
+
+
+def test_takeoff_clamped_to_fence_ceiling():
+    # FakeBackend fence_alt_max_m=100 -> ceiling 99; request above must clamp.
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("takeoff", {"altitude_m": 500})
+    assert "reached 99.0 m" in out
+    assert "alt 99.0 m" in out
+
+
+def test_disarm_refused_while_airborne():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    out = s.run_flight_tool("disarm", {})
+    assert out.startswith("failed:")
+    assert "airborne" in out
+
+
+def test_readonly_server_hides_flight_tools():
+    mcp = build_server(Settings(backend="fake"))
+    names = {t.name for t in _tools(mcp)}
+    assert "get_status" in names
+    assert "capture_camera" in names
+    assert "takeoff" not in names and "arm" not in names
+
+
+def test_actuation_server_exposes_flight_tools():
+    mcp = build_server(Settings(backend="fake", enable_actuation=True))
+    names = {t.name for t in _tools(mcp)}
+    for expected in ("arm", "takeoff", "land", "rtl", "goto", "move", "set_mode", "emergency_stop"):
+        assert expected in names
+
+
+def _tools(mcp):
+    import asyncio
+    return asyncio.run(mcp.list_tools())
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

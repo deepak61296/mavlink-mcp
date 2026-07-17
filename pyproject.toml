@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mavlink-mcp"
+version = "0.1.0"
+description = "MCP server for MAVLink drones: safety-gated flight tools and live camera frames for Claude, Codex and any MCP client. ArduPilot today, PX4 next."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "deepak61296" }]
+keywords = ["mcp", "mavlink", "ardupilot", "px4", "drone", "uav", "llm", "sitl"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp>=1.2",
+    "pymavlink>=2.4.40",
+]
+
+[project.optional-dependencies]
+camera = ["opencv-python>=4.8"]
+dev = ["pytest>=8", "flake8>=7"]
+
+[project.scripts]
+mavlink-mcp = "mavlink_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/deepak61296/mavlink-mcp"
+Issues = "https://github.com/deepak61296/mavlink-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mavlink_mcp"]
