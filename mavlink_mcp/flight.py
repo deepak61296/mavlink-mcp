@@ -116,6 +116,10 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         return CommandResult.success("disarmed")
 
     def takeoff(p: dict) -> CommandResult:
+        tel = backend.get_telemetry()
+        if (tel.alt_rel_m or 0) > 1.0:
+            return CommandResult.failure(
+                f"already airborne at {tel.alt_rel_m:.1f} m - use goto/move to change position")
         ceiling = lim.max_takeoff_alt_m
         fence_cap = backend.fence_ceiling_m()  # above the alt fence the FC refuses the takeoff
         if fence_cap is not None:

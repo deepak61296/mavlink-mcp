@@ -58,6 +58,14 @@ def test_takeoff_clamped_to_fence_ceiling():
     assert "alt 99.0 m" in out
 
 
+def test_takeoff_refused_while_airborne():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    out = s.run_flight_tool("takeoff", {"altitude_m": 20})
+    assert out.startswith("failed:")
+    assert "already airborne" in out
+
+
 def test_disarm_refused_while_airborne():
     s = _session(enable_actuation=True)
     s.run_flight_tool("takeoff", {"altitude_m": 10})
