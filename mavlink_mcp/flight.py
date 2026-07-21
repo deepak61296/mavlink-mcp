@@ -169,7 +169,18 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         return CommandResult.failure("land not confirmed")
 
     def rtl(_: dict) -> CommandResult:
-        return backend.set_mode("RTL")
+        # Block until the vehicle is actually down, like land(): returning as soon as the mode
+        # switches tells the caller "done" while the aircraft is still 20 m up and flying home.
+        res = backend.execute_primitive(Primitive("rtl"))
+        if not res.ok:
+            return res
+        done = poll_until(backend, lambda t: not t.armed and (t.alt_rel_m or 0) < 0.6, 240,
+                          interrupt=interrupt)
+        if done:
+            return CommandResult.success("returned to launch, landed and disarmed")
+        if interrupt is not None and interrupt.is_set():
+            return CommandResult.failure("rtl interrupted")
+        return CommandResult.failure("still returning to launch (not down yet)")
 
     def wait(p: dict) -> CommandResult:
         secs = clamp(float(p.get("seconds", 1.0)), 0.0, lim.max_wait_s)

@@ -273,7 +273,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool()
     def rtl() -> str:
-        """Return to launch and land."""
+        """Return to launch and land. Blocks until the vehicle is down and disarmed."""
         return session.run_flight_tool("rtl", {})
 
     @mcp.tool()

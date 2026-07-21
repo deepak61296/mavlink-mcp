@@ -140,6 +140,14 @@ def test_resources_registered():
     assert "mode=GUIDED" in list(content)[0].content
 
 
+def test_rtl_blocks_until_landed_and_disarmed():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 20})
+    out = s.run_flight_tool("rtl", {})
+    assert "landed and disarmed" in out
+    assert "[state: alt 0.0 m, RTL, disarmed]" in out
+
+
 def test_readonly_server_hides_flight_tools():
     mcp = build_server(Settings(backend="fake"))
     names = {t.name for t in _tools(mcp)}

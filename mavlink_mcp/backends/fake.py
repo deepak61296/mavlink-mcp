@@ -126,6 +126,9 @@ class FakeBackend(RobotBackend):
         if name == "rtl":
             self._tel.mode = "RTL"
             self._tel.alt_rel_m = 0.0
+            self._tel.armed = False       # a real RTL ends landed and disarmed
+            if self._home_lat is not None:
+                self._tel.lat_deg, self._tel.lon_deg = self._home_lat, self._home_lon
             return CommandResult.success("returning to launch")
         if name == "goto":
             self._tel.lat_deg, self._tel.lon_deg = self._fence_clamp(
