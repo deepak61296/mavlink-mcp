@@ -55,8 +55,11 @@ class VehicleSession:
         self._connect_lock = threading.Lock()
         self._act_lock = threading.Lock()
         self._connect_error: Optional[str] = None
+        # Set to abort a blocking flight tool mid-flight; every poll loop watches it.
+        self._interrupt = threading.Event()
         self.tools: dict[str, AgentTool] = {
-            t.name: t for t in build_flight_tools(backend, settings.limits)}
+            t.name: t for t in build_flight_tools(backend, settings.limits,
+                                                  interrupt=self._interrupt)}
         self.frames: Optional[cam.FrameHub] = None
         if settings.camera:
             source = cam.make_frame_source(settings.camera)
@@ -136,6 +139,27 @@ class VehicleSession:
         lines.append("actuation: " + ("enabled" if self.settings.enable_actuation
                                       else "disabled (read-only tools only)"))
         return "\n".join(lines)
+
+    def abort(self) -> str:
+        """Interrupt whatever is flying and return to launch.
+
+        Emergency stop must not queue behind the blocking tool it is meant to cancel, so it
+        never takes the actuation lock: it raises the interrupt flag (which unwinds the
+        running tool), commands RTL, then waits for the aborted tool to let go of the lock
+        before clearing the flag so the next command starts from a clean state.
+        """
+        err = self.ensure_connected()
+        if err:
+            return f"error: {err}"
+        self._interrupt.set()
+        try:
+            res = self.backend.emergency_stop()
+        finally:
+            if self._act_lock.acquire(timeout=10.0):
+                self._act_lock.release()
+            self._interrupt.clear()
+        prefix = "" if res.ok else "failed: "
+        return f"{prefix}{res.message}\n{self.state_line()}"
 
     def run_flight_tool(self, name: str, params: dict) -> str:
         """Guarded, serialised dispatch into the blocking flight-tool layer."""
@@ -333,12 +357,9 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool()
     def emergency_stop() -> str:
-        """Immediately abort and return to launch. Use when something is wrong."""
-        err = session.ensure_connected()
-        if err:
-            return f"error: {err}"
-        res = session.backend.emergency_stop()
-        return f"{res.message}\n{session.state_line()}"
+        """Immediately abort and return to launch. Use when something is wrong. Cancels a
+        flight command that is still running instead of waiting for it to finish."""
+        return session.abort()
 
     return mcp
 

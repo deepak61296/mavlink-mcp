@@ -140,6 +140,14 @@ def test_resources_registered():
     assert "mode=GUIDED" in list(content)[0].content
 
 
+def test_abort_interrupts_and_returns_to_launch():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    out = s.abort()
+    assert "RTL" in out
+    assert not s._interrupt.is_set()  # cleared so later commands still run
+
+
 def test_safety_params_cannot_be_switched_off():
     from mavlink_mcp.safety import param_block
     assert "geofence" in param_block("FENCE_ENABLE", 0)
