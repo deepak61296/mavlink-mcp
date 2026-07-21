@@ -142,13 +142,15 @@ class MavlinkBackend(RobotBackend):
                 self._update_telemetry(msg)
 
     def _maybe_heartbeat(self) -> None:
-        """Send a ~1 Hz GCS heartbeat so the FC's FS_GCS failsafe RTLs if we (the GCS) go silent.
+        """Send a ~3 Hz GCS heartbeat so the FC's FS_GCS failsafe RTLs if we (the GCS) go silent.
 
         Called from the owner loop AND from inside the blocking command waiters, so heartbeats keep
-        flowing even while a command is waiting on its ACK. Owner-thread only.
+        flowing even while a command is waiting on its ACK. Owner-thread only. 3 Hz rather than the
+        usual 1 Hz because SITL at --speedup N stretches wall-clock gaps into N sim-seconds: at 1 Hz
+        a speedup-5 run sits exactly on FS_GCS_TIMEOUT=5 and flaps in and out of GCS failsafe.
         """
         now = time.time()
-        if now - self._last_hb >= 1.0:
+        if now - self._last_hb >= 0.3:
             self._conn.mav.heartbeat_send(
                 mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID,
                 0, 0, mavutil.mavlink.MAV_STATE_ACTIVE)
