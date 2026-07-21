@@ -14,9 +14,14 @@ Where the project is and what's next. Kept short on purpose.
 - [x] Safety: actuation off by default, real-vehicle gate, fence clamp, alt ceiling,
       no-disarm-airborne, GCS-heartbeat failsafe, bad input rejected cleanly
 - [x] Fake in-memory backend, tests, CI, MIT license
+- [x] describe_vehicle: autopilot + fw version, vehicle type, sensor health, capabilities —
+      discovered from the vehicle (heartbeat / AUTOPILOT_VERSION / SYS_STATUS)
+- [x] MCP resources: mavlink://vehicle, mavlink://telemetry
+- [x] TOML config file (--config): connection, backend, camera, safety limits
+- [x] backend auto-detect from heartbeat (default `--backend auto`)
 
 ## Next
-- [ ] PX4 backend (MAVSDK) — detect firmware from heartbeat, connect the right backend
+- [ ] PX4 backend (MAVSDK) — flight on PX4; detection already routes to it
 - [ ] Gazebo demo (record the drone flying a mission with the camera in the loop)
 - [ ] detect_target / precision_land tools (ported from the drone-agent codebase)
 - [ ] sighting memory (recall / return-to what the drone saw)

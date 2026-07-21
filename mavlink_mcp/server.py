@@ -13,30 +13,24 @@ Design rules:
 from __future__ import annotations
 
 import argparse
-import os
 import threading
-from dataclasses import dataclass
+import time
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP, Image
 
 from . import __version__, camera as cam
-from .backends import AUTOPILOT_PX4, autopilot_name
+from .backends import (
+    AUTOPILOT_PX4,
+    autopilot_name,
+    capability_names,
+    decode_fw_version,
+    sensor_report,
+    vehicle_type_name,
+)
+from .config import Settings, load_settings
 from .flight import AgentTool, build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
-from .safety import SafetyLimits
-
-_ENV_PREFIX = "MAVLINK_MCP_"
-
-
-@dataclass
-class Settings:
-    conn: str = "tcp:127.0.0.1:5760"
-    backend: str = "ardupilot"          # ardupilot | fake (px4 via MAVSDK planned)
-    enable_actuation: bool = False
-    allow_real_vehicle: bool = False
-    camera: Optional[str] = None        # gazebo[:port] | rtsp://... | udp://... | file:<path>
-    connect_timeout_s: float = 25.0
 
 
 def is_local_sim_uri(uri: str) -> bool:
@@ -60,9 +54,8 @@ class VehicleSession:
         self._connect_lock = threading.Lock()
         self._act_lock = threading.Lock()
         self._connect_error: Optional[str] = None
-        limits = SafetyLimits()
         self.tools: dict[str, AgentTool] = {
-            t.name: t for t in build_flight_tools(backend, limits)}
+            t.name: t for t in build_flight_tools(backend, settings.limits)}
         self.frames: Optional[cam.FrameHub] = None
         if settings.camera:
             source = cam.make_frame_source(settings.camera)
@@ -105,6 +98,44 @@ class VehicleSession:
         alt = f"{t.alt_rel_m:.1f}" if t.alt_rel_m is not None else "?"
         return f"[state: alt {alt} m, {t.mode or '?'}, {'armed' if t.armed else 'disarmed'}]"
 
+    def vehicle_info(self) -> str:
+        """Identity/capability summary discovered from the vehicle itself (heartbeat,
+        AUTOPILOT_VERSION, SYS_STATUS), not from configuration."""
+        err = self.ensure_connected()
+        if err:
+            return f"error: {err}"
+        b = self.backend
+        ap = autopilot_name(getattr(b, "autopilot_id", None))
+        vtype = vehicle_type_name(getattr(b, "vehicle_type_id", None))
+        version = getattr(b, "get_version", lambda: None)()
+        if version:
+            git = f" (git {version['git_hash']})" if version.get("git_hash") else ""
+            lines = [f"{ap} {decode_fw_version(version['flight_sw_version'])}{git}, {vtype}"]
+        else:
+            lines = [f"{ap}, {vtype}"]
+        sensors = getattr(b, "sensor_bits", None)
+        if sensors is not None:
+            bits = sensors()
+            deadline = time.time() + 2.0   # first SYS_STATUS may not have arrived yet
+            while not bits[0] and time.time() < deadline:
+                time.sleep(0.1)
+                bits = sensors()
+            if bits[0]:
+                healthy, bad = sensor_report(*bits)
+                lines.append(f"sensors: {healthy} healthy"
+                             + (", UNHEALTHY: " + ", ".join(bad) if bad else ""))
+            else:
+                lines.append("sensors: not reported yet")
+        ceiling = b.fence_ceiling_m()
+        if ceiling is not None:
+            lines.append(f"fence altitude ceiling: {ceiling:.0f} m")
+        if version and version.get("capabilities"):
+            lines.append("protocol capabilities: " + ", ".join(capability_names(version["capabilities"])))
+        lines.append(f"connection: {self.settings.conn}")
+        lines.append("actuation: " + ("enabled" if self.settings.enable_actuation
+                                      else "disabled (read-only tools only)"))
+        return "\n".join(lines)
+
     def run_flight_tool(self, name: str, params: dict) -> str:
         """Guarded, serialised dispatch into the blocking flight-tool layer."""
         err = self.ensure_connected()
@@ -133,6 +164,9 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
             from .backends.fake import FakeBackend
             backend = FakeBackend()
         else:
+            # "auto" and "ardupilot" both open the link with pymavlink; the first heartbeat
+            # says what is really there. Once the PX4/MAVSDK backend exists, "auto" will hand
+            # a PX4 heartbeat over to it instead of refusing flight.
             from .backends.ardupilot import MavlinkBackend
             backend = MavlinkBackend()
     session = VehicleSession(settings, backend)
@@ -167,6 +201,12 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return res.message if res.ok else f"not ready: {res.message}"
 
     @mcp.tool()
+    def describe_vehicle() -> str:
+        """What is on the other end of the link: autopilot + firmware version, vehicle type,
+        sensor health, fence, protocol capabilities. Discovered from the vehicle itself."""
+        return session.vehicle_info()
+
+    @mcp.tool()
     def get_param(name: str) -> str:
         """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX, WPNAV_SPEED)."""
         err = session.ensure_connected()
@@ -190,6 +230,20 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         if frame is None:
             return "no frame available yet - is the video stream up?"
         return Image(data=frame, format="jpeg")
+
+    # ------------------------------------------------------------------ resources
+    @mcp.resource("mavlink://vehicle")
+    def vehicle_resource() -> str:
+        """Vehicle identity: autopilot, firmware, type, sensors, capabilities."""
+        return session.vehicle_info()
+
+    @mcp.resource("mavlink://telemetry")
+    def telemetry_resource() -> str:
+        """Live telemetry snapshot (mode, position, altitude, battery, GPS, EKF)."""
+        err = session.ensure_connected()
+        if err:
+            return f"error: {err}"
+        return format_telemetry(session.backend.get_telemetry())
 
     if not settings.enable_actuation:
         return mcp
@@ -291,16 +345,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="mavlink-mcp",
         description="MCP server exposing a MAVLink drone (ArduPilot SITL or vehicle) to LLM clients.")
-    parser.add_argument("--conn", default=os.environ.get(_ENV_PREFIX + "CONN", "tcp:127.0.0.1:5760"),
+    parser.add_argument("--config", default=None,
+                        help="TOML config file; flags and MAVLINK_MCP_* env vars override it")
+    parser.add_argument("--conn", default=None,
                         help="MAVLink connection (default tcp:127.0.0.1:5760 = SITL)")
-    parser.add_argument("--backend", choices=["ardupilot", "fake"],
-                        default=os.environ.get(_ENV_PREFIX + "BACKEND", "ardupilot"),
-                        help="'fake' is an in-memory drone for trying the server with no SITL")
+    parser.add_argument("--backend", choices=["auto", "ardupilot", "fake"], default=None,
+                        help="default 'auto' detects the autopilot from the heartbeat; "
+                             "'fake' is an in-memory drone for trying the server with no SITL")
     parser.add_argument("--enable-actuation", action="store_true",
                         help="register flight tools (arm/takeoff/goto/...); off = read-only")
     parser.add_argument("--allow-real-vehicle", action="store_true",
                         help="allow actuation on connections that are not a local simulator")
-    parser.add_argument("--camera", default=os.environ.get(_ENV_PREFIX + "CAMERA"),
+    parser.add_argument("--camera", default=None,
                         help="camera source: gazebo[:port], rtsp://..., udp://..., file:<path>")
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1", help="bind address for --transport http")
@@ -308,11 +364,7 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"mavlink-mcp {__version__}")
     args = parser.parse_args()
 
-    settings = Settings(conn=args.conn, backend=args.backend,
-                        enable_actuation=args.enable_actuation,
-                        allow_real_vehicle=args.allow_real_vehicle,
-                        camera=args.camera)
-    mcp = build_server(settings)
+    mcp = build_server(load_settings(args))
     if args.transport == "http":
         mcp.settings.host = args.host
         mcp.settings.port = args.port

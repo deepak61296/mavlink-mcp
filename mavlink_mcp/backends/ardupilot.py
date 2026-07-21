@@ -75,6 +75,9 @@ class MavlinkBackend(RobotBackend):
         self._last_hb = 0.0           # last GCS heartbeat we sent (drives FS_GCS on the FC)
         self._mount_pitch_deg: Optional[float] = None  # actual gimbal pitch reported by the FC
         self._autopilot: Optional[int] = None          # MAV_AUTOPILOT_* from the first heartbeat
+        self._vehicle_type: Optional[int] = None       # MAV_TYPE_* from the first heartbeat
+        self._sensors = (0, 0, 0)                      # SYS_STATUS present/enabled/health bitmasks
+        self._version: Optional[dict] = None           # cached AUTOPILOT_VERSION info
 
     # ------------------------------------------------------------------ lifecycle
     def connect(self, uri: str, timeout_s: float = 30.0) -> CommandResult:
@@ -129,6 +132,7 @@ class MavlinkBackend(RobotBackend):
         if heartbeat is None:
             return  # connect() observes the timeout via self._connected
         self._autopilot = heartbeat.autopilot
+        self._vehicle_type = heartbeat.type
         self._connected.set()
         while not self._stop.is_set():
             self._drain_commands()
@@ -199,6 +203,9 @@ class MavlinkBackend(RobotBackend):
                 tel.battery_remaining_pct = (
                     float(msg.battery_remaining) if msg.battery_remaining != -1 else None
                 )
+                self._sensors = (msg.onboard_control_sensors_present,
+                                 msg.onboard_control_sensors_enabled,
+                                 msg.onboard_control_sensors_health)
             elif msg_type == "EKF_STATUS_REPORT":
                 tel.ekf_ok = bool(msg.flags & _EKF_POS_HORIZ_ABS)
             elif msg_type == "HOME_POSITION":
@@ -299,6 +306,31 @@ class MavlinkBackend(RobotBackend):
         self._do_set_param("FS_GCS_ENABLE", 1)   # 1 = RTL on GCS loss (Copter)
         self._do_set_param("FS_GCS_TIMEOUT", 5)
         return CommandResult.success("gcs failsafe enabled")
+
+    def _do_get_version(self, timeout: float = 5.0) -> Optional[dict]:
+        """Request AUTOPILOT_VERSION and wait for it. Owner-thread only."""
+        self._conn.mav.command_long_send(
+            self._conn.target_system, self._conn.target_component,
+            mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE, 0,
+            mavutil.mavlink.MAVLINK_MSG_ID_AUTOPILOT_VERSION, 0, 0, 0, 0, 0, 0)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self._maybe_heartbeat()
+            msg = self._conn.recv_match(blocking=True, timeout=max(0.0, deadline - time.time()))
+            if msg is None:
+                break
+            if msg.get_type() == "AUTOPILOT_VERSION":
+                git = bytes(msg.flight_custom_version).decode(errors="ignore").strip("\x00")
+                return {"flight_sw_version": msg.flight_sw_version,
+                        "capabilities": msg.capabilities, "git_hash": git}
+            self._update_telemetry(msg)
+        return None
+
+    def get_version(self) -> Optional[dict]:
+        """Firmware version + capability bits (AUTOPILOT_VERSION), fetched once and cached."""
+        if self._version is None and self.is_connected:
+            self._version = self._submit(self._do_get_version).result(timeout=8)
+        return self._version
 
     def get_param(self, name: str) -> Optional[float]:
         if not self.is_connected:
@@ -435,6 +467,16 @@ class MavlinkBackend(RobotBackend):
     def autopilot_id(self) -> Optional[int]:
         """MAV_AUTOPILOT_* from the first heartbeat (3=ArduPilot, 12=PX4), or None."""
         return self._autopilot
+
+    @property
+    def vehicle_type_id(self) -> Optional[int]:
+        """MAV_TYPE_* from the first heartbeat (2=quadrotor, 1=fixed wing, ...), or None."""
+        return self._vehicle_type
+
+    def sensor_bits(self) -> tuple[int, int, int]:
+        """SYS_STATUS (present, enabled, health) sensor bitmasks, freshest received."""
+        with self._tel_lock:
+            return self._sensors
 
     def fence_ceiling_m(self) -> Optional[float]:
         if self._fence.usable() and self._fence.alt_max_m > 0:

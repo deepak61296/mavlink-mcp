@@ -20,6 +20,9 @@ _MODES = ["GUIDED", "LOITER", "ALT_HOLD", "AUTO", "RTL", "LAND"]
 class FakeBackend(RobotBackend):
     """A trivial simulated drone: state lives in a single Telemetry object."""
 
+    autopilot_id = 3       # pretends to be ArduPilot (MAV_AUTOPILOT_ARDUPILOTMEGA)
+    vehicle_type_id = 2    # MAV_TYPE_QUADROTOR
+
     def __init__(self) -> None:
         self._connected = False
         self._tel = Telemetry()
@@ -90,6 +93,14 @@ class FakeBackend(RobotBackend):
         if self.fence_alt_max_m:
             return self.fence_alt_max_m - 1.0
         return None
+
+    def get_version(self):
+        # 4.8.0 official; matches decode_fw_version's major<<24|minor<<16|patch<<8|type layout
+        return {"flight_sw_version": (4 << 24) | (8 << 16) | 255, "capabilities": 0,
+                "git_hash": "fake0000"}
+
+    def sensor_bits(self):
+        return (0x3F, 0x3F, 0x3F)     # gyro/accel/mag/baro/diff-pressure/GPS, all healthy
 
     def get_param(self, name: str):
         return self._params.get(name.upper())

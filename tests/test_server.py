@@ -104,6 +104,34 @@ def test_orbit_radius_clamped():
     assert "flew a 100 m circle" in out
 
 
+def test_takeoff_clamped_to_configured_limit():
+    from mavlink_mcp.safety import SafetyLimits
+    settings = Settings(backend="fake", enable_actuation=True,
+                        limits=SafetyLimits(max_takeoff_alt_m=15))
+    s = VehicleSession(settings, FakeBackend())
+    out = s.run_flight_tool("takeoff", {"altitude_m": 50})
+    assert "reached 15.0 m" in out
+
+
+def test_vehicle_info_reports_identity():
+    s = _session()
+    info = s.vehicle_info()
+    assert "ArduPilot 4.8.0" in info
+    assert "Quadrotor" in info
+    assert "sensors: 6 healthy" in info
+    assert "actuation: disabled" in info
+
+
+def test_resources_registered():
+    import asyncio
+    mcp = build_server(Settings(backend="fake"))
+    uris = {str(r.uri) for r in asyncio.run(mcp.list_resources())}
+    assert "mavlink://vehicle" in uris
+    assert "mavlink://telemetry" in uris
+    content = asyncio.run(mcp.read_resource("mavlink://telemetry"))
+    assert "mode=GUIDED" in list(content)[0].content
+
+
 def test_readonly_server_hides_flight_tools():
     mcp = build_server(Settings(backend="fake"))
     names = {t.name for t in _tools(mcp)}

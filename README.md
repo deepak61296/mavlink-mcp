@@ -45,7 +45,14 @@ No SITL? `mavlink-mcp --backend fake --enable-actuation` runs an in-memory drone
 
 ## Tools
 
-Read-only (always on): `get_status`, `check_armable`, `get_param`, `capture_camera`.
+Read-only (always on): `get_status`, `describe_vehicle`, `check_armable`, `get_param`,
+`capture_camera`.
+
+The server also finds out what it's talking to on its own: `describe_vehicle` reports the
+autopilot and firmware version (from `AUTOPILOT_VERSION`), the vehicle type from the
+heartbeat, sensor health from `SYS_STATUS`, the fence, and the protocol capabilities —
+all read from the vehicle, not from configuration. The same info is published as MCP
+resources (`mavlink://vehicle`, `mavlink://telemetry`) for clients that read those.
 
 Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `goto`, `move`,
 `orbit`, `set_mode`, `set_param`, `point_camera`, `emergency_stop`.
@@ -78,15 +85,36 @@ None of this replaces a human with a kill switch on a real flight.
 | `--enable-actuation` | | off | register the flight tools |
 | `--allow-real-vehicle` | | off | allow actuation on non-local connections |
 | `--camera` | `MAVLINK_MCP_CAMERA` | none | `gazebo[:port]`, `rtsp://...`, `udp://...`, `file:<path>` |
-| `--backend` | `MAVLINK_MCP_BACKEND` | `ardupilot` | `ardupilot` or `fake` |
+| `--backend` | `MAVLINK_MCP_BACKEND` | `auto` | `auto` (detect from heartbeat), `ardupilot`, `fake` |
+| `--config` | `MAVLINK_MCP_CONFIG` | none | TOML config file, see below |
 | `--transport` | | `stdio` | `stdio` or `http` |
 
 The link opens lazily on the first tool call, so the server starts fine before SITL is up.
 
+Instead of flags you can keep everything in one TOML file — handy when the MCP client
+entry should stay short, and the only place to tune the safety limits:
+
+```toml
+# drone.toml — run with: mavlink-mcp --config drone.toml
+[connection]
+uri = "tcp:127.0.0.1:5760"
+
+[safety]
+enable_actuation = true
+max_takeoff_alt_m = 50      # clamp on top of the vehicle's own fence
+max_orbit_radius_m = 100
+
+[camera]
+source = "gazebo"
+```
+
+Flags and env vars override the file.
+
 ## Autopilot support
 
-ArduPilot works today. PX4 is detected from the heartbeat and the read-only tools work on it, but
-flight is refused until the PX4 backend (MAVSDK) is done — see [STATUS.md](STATUS.md).
+The default backend is `auto`: the server reads the autopilot type from the first heartbeat.
+ArduPilot works today. PX4 is recognised and the read-only tools work on it, but flight is
+refused until the PX4 backend (MAVSDK) is done — see [STATUS.md](STATUS.md).
 
 `scripts/mission_demo.py` is a small example that drives the server over MCP and flies a mission.
 
