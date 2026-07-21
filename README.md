@@ -37,7 +37,14 @@ Codex CLI (`~/.codex/config.toml`):
 [mcp_servers.drone]
 command = "mavlink-mcp"
 args = ["--enable-actuation", "--camera", "gazebo"]
+# Codex asks before every flight tool by default, because they are marked destructive.
+# Set this to "approve" only if you want it to fly unattended (a simulator, say).
+default_tools_approval_mode = "auto"
 ```
+
+Every tool is annotated, so a client can tell the difference between reading telemetry and
+moving an aircraft: the read-only tools declare `readOnlyHint` and get auto-approved, the
+flight tools declare `destructiveHint` and prompt.
 
 Then ask it something like *"take off to 20 m, fly 40 m north, orbit here at 15 m, take a photo, then RTL."*
 
@@ -60,15 +67,22 @@ Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `
 - `move` takes north/south/east/west, the four diagonals (northeast/…), or forward/back/left/right,
   plus a distance. Blocks until it arrives.
 - `orbit` flies one full circle of a given radius around the current position, holding altitude.
-- `takeoff`/`goto`/`move`/`orbit`/`land` all block until the vehicle actually gets there, and every
+- `takeoff`/`goto`/`move`/`orbit`/`land`/`rtl` all block until the vehicle actually gets
+  there — `rtl` returns once it is down and disarmed, not when the mode switches — and every
   reply ends with a `[state: alt X m, MODE, armed]` line read from live telemetry.
+- `emergency_stop` cancels a flight command that is still running instead of queueing behind it.
+- Flight commands run off the event loop, so `get_status` and `emergency_stop` still answer
+  immediately while the vehicle is in the middle of a long move.
 - `capture_camera` returns the frame as an MCP image, so a multimodal model can look at it. Point
-  `--camera` at `gazebo`, an `rtsp://` URL, or `file:<path>`.
+  `--camera` at `gazebo`, an `rtsp://` URL, or `file:<path>`. `file:` is handy for a first
+  test: point it at any JPEG and check your client actually renders what the drone "sees".
 
 ## Safety
 
 - Actuation is off unless you pass `--enable-actuation`. Without it, only the read-only tools exist.
 - Even then, flying anything that isn't a local simulator needs `--allow-real-vehicle` on top.
+- `set_param` refuses writes that would switch off a fence or a failsafe (`FENCE_ENABLE`,
+  `FS_GCS_ENABLE`, `ARMING_CHECK`, ...) unless you pass `--allow-unsafe-params`.
 - Altitude is clamped to a limit and to the vehicle's fence; horizontal targets are pulled back
   inside the geofence.
 - No disarm while airborne, no takeoff while flying, no move before arming.
@@ -84,6 +98,7 @@ None of this replaces a human with a kill switch on a real flight.
 | `--conn` | `MAVLINK_MCP_CONN` | `tcp:127.0.0.1:5760` | MAVLink endpoint (SITL, `udp:...`, `serial:/dev/ttyACM0:57600`) |
 | `--enable-actuation` | | off | register the flight tools |
 | `--allow-real-vehicle` | | off | allow actuation on non-local connections |
+| `--allow-unsafe-params` | | off | let `set_param` disable fences/failsafes |
 | `--camera` | `MAVLINK_MCP_CAMERA` | none | `gazebo[:port]`, `rtsp://...`, `udp://...`, `file:<path>` |
 | `--backend` | `MAVLINK_MCP_BACKEND` | `auto` | `auto` (detect from heartbeat), `ardupilot`, `fake` |
 | `--config` | `MAVLINK_MCP_CONFIG` | none | TOML config file, see below |

@@ -19,6 +19,14 @@ Where the project is and what's next. Kept short on purpose.
 - [x] MCP resources: mavlink://vehicle, mavlink://telemetry
 - [x] TOML config file (--config): connection, backend, camera, safety limits
 - [x] backend auto-detect from heartbeat (default `--backend auto`)
+- [x] set_param guard rails: refuses to switch off fences/failsafes without
+      --allow-unsafe-params
+- [x] emergency_stop cancels a running flight command instead of queueing behind it
+- [x] tool annotations (readOnlyHint / destructiveHint) so clients gate flight properly
+- [x] blocking commands run in a worker thread, so the server still answers telemetry and
+      emergency_stop mid-flight instead of going deaf until the move finishes
+- [x] rtl blocks until the vehicle is actually down, like land
+- [x] flown end to end from Codex CLI: takeoff, 10 moves, 2 orbits, camera, RTL
 
 ## Next
 - [ ] PX4 backend (MAVSDK) — flight on PX4; detection already routes to it
@@ -26,7 +34,7 @@ Where the project is and what's next. Kept short on purpose.
 - [ ] detect_target / precision_land tools (ported from the drone-agent codebase)
 - [ ] sighting memory (recall / return-to what the drone saw)
 - [ ] waypoint missions (AUTO), not just point-to-point
-- [ ] set_param guard rails (don't let it disable the fence / failsafes)
+- [ ] downscale big camera frames (a 4K JPEG is too large for most clients)
 - [ ] test on real hardware
 
 ## Notes
