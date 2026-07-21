@@ -21,6 +21,8 @@ from .safety import SafetyLimits
 _ENV_PREFIX = "MAVLINK_MCP_"
 _BACKENDS = ("auto", "ardupilot", "fake")
 _SECTIONS = ("connection", "backend", "safety", "camera")
+# [safety] keys that are switches on Settings, not numeric fields of SafetyLimits
+_SAFETY_FLAGS = ("enable_actuation", "allow_real_vehicle", "allow_unsafe_params")
 
 
 @dataclass
@@ -29,6 +31,7 @@ class Settings:
     backend: str = "auto"               # auto | ardupilot | fake (px4 via MAVSDK planned)
     enable_actuation: bool = False
     allow_real_vehicle: bool = False
+    allow_unsafe_params: bool = False   # let set_param disable fences/failsafes
     camera: Optional[str] = None        # gazebo[:port] | rtsp://... | udp://... | file:<path>
     connect_timeout_s: float = 25.0
     limits: SafetyLimits = field(default_factory=SafetyLimits)
@@ -52,7 +55,7 @@ def _limits_from(safety_cfg: dict) -> SafetyLimits:
     limits = SafetyLimits()
     known = {f.name for f in fields(SafetyLimits)}
     for key, value in safety_cfg.items():
-        if key in ("enable_actuation", "allow_real_vehicle"):
+        if key in _SAFETY_FLAGS:
             continue
         if key in known:
             setattr(limits, key, float(value))
@@ -94,6 +97,8 @@ def load_settings(args) -> Settings:
         backend=backend,
         enable_actuation=bool(args.enable_actuation or safety_cfg.get("enable_actuation", False)),
         allow_real_vehicle=bool(args.allow_real_vehicle or safety_cfg.get("allow_real_vehicle", False)),
+        allow_unsafe_params=bool(getattr(args, "allow_unsafe_params", False)
+                                 or safety_cfg.get("allow_unsafe_params", False)),
         camera=pick(args.camera, "CAMERA", camera_cfg.get("source"), None),
         connect_timeout_s=float(conn_cfg.get("timeout_s", 25.0)),
         limits=_limits_from(safety_cfg),

@@ -31,6 +31,7 @@ from .backends import (
 from .config import Settings, load_settings
 from .flight import AgentTool, build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
+from .safety import param_block
 
 
 def is_local_sim_uri(uri: str) -> bool:
@@ -304,11 +305,12 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     @mcp.tool()
     def set_param(name: str, value: float) -> str:
         """Set one autopilot parameter by exact name. The value is written as-is - check
-        the parameter's valid range first."""
+        the parameter's valid range first. Writes that would switch off a fence or a
+        failsafe are refused."""
         err = session.ensure_connected()
         if err:
             return f"error: {err}"
-        block = session.actuation_block()
+        block = session.actuation_block() or param_block(name, value, settings.allow_unsafe_params)
         if block:
             return f"blocked: {block}"
         setter = getattr(session.backend, "set_param", None)
@@ -356,6 +358,8 @@ def main() -> None:
                         help="register flight tools (arm/takeoff/goto/...); off = read-only")
     parser.add_argument("--allow-real-vehicle", action="store_true",
                         help="allow actuation on connections that are not a local simulator")
+    parser.add_argument("--allow-unsafe-params", action="store_true",
+                        help="allow set_param to switch off fences and failsafes")
     parser.add_argument("--camera", default=None,
                         help="camera source: gazebo[:port], rtsp://..., udp://..., file:<path>")
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")

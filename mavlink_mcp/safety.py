@@ -13,6 +13,22 @@ from .interfaces import RiskTier, Telemetry
 
 _AIRBORNE_M = 1.0  # alt above which the vehicle is considered flying
 
+# Parameters that ARE the safety net. For every one of these a value of zero means "off":
+# no fence, no failsafe, no prearm check. An agent that writes one of these disarms the
+# very machinery the rest of this module trusts, so writing zero needs an explicit opt-in.
+_SAFETY_PARAMS = {
+    "FENCE_ENABLE": "the geofence",
+    "FENCE_ACTION": "the response to a fence breach",
+    "FENCE_RADIUS": "the horizontal geofence",
+    "FENCE_ALT_MAX": "the altitude fence",
+    "FS_GCS_ENABLE": "the GCS-loss failsafe, which is this server's own lifeline",
+    "FS_THR_ENABLE": "the RC/throttle failsafe",
+    "FS_EKF_ACTION": "the response to a bad position estimate",
+    "ARMING_CHECK": "the prearm checks",
+    "BATT_FS_LOW_ACT": "the low-battery failsafe",
+    "BATT_FS_CRT_ACT": "the critical-battery failsafe",
+}
+
 
 @dataclass
 class SafetyLimits:
@@ -45,6 +61,20 @@ def preflight_check(tool_name: str, params: dict, tel: Telemetry) -> Optional[st
         return f"already airborne at {tel.alt_rel_m:.1f} m - cannot take off again"
     if tool_name in ("move", "goto") and not tel.armed:
         return "vehicle is not armed - take off before moving"
+    return None
+
+
+def param_block(name: str, value: float, allow_unsafe: bool = False) -> Optional[str]:
+    """Reason this parameter write is refused, or None if it is allowed.
+
+    Only guards turning a safety net off; ordinary tuning parameters pass straight through.
+    """
+    if allow_unsafe:
+        return None
+    what = _SAFETY_PARAMS.get(name.upper())
+    if what is not None and float(value) <= 0:
+        return (f"setting {name.upper()} to {value:g} would turn off {what}. "
+                "Restart the server with --allow-unsafe-params if that is really intended.")
     return None
 
 

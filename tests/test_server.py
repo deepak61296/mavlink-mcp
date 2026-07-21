@@ -140,6 +140,16 @@ def test_resources_registered():
     assert "mode=GUIDED" in list(content)[0].content
 
 
+def test_safety_params_cannot_be_switched_off():
+    from mavlink_mcp.safety import param_block
+    assert "geofence" in param_block("FENCE_ENABLE", 0)
+    assert "lifeline" in param_block("FS_GCS_ENABLE", 0)
+    assert "prearm" in param_block("ARMING_CHECK", 0)
+    assert param_block("FENCE_ENABLE", 1) is None      # turning one ON is always fine
+    assert param_block("WP_SPD", 0) is None            # ordinary tuning is not guarded
+    assert param_block("FENCE_ENABLE", 0, allow_unsafe=True) is None
+
+
 def test_rtl_blocks_until_landed_and_disarmed():
     s = _session(enable_actuation=True)
     s.run_flight_tool("takeoff", {"altitude_m": 20})
