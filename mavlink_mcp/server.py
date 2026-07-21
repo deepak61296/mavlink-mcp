@@ -19,6 +19,7 @@ from typing import Optional
 
 import anyio.to_thread
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.types import ToolAnnotations
 
 from . import __version__, camera as cam
 from .backends import (
@@ -33,6 +34,15 @@ from .config import Settings, load_settings
 from .flight import AgentTool, build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
 from .safety import param_block
+
+
+# Tool annotations tell the client what a tool does before it calls it. Clients use these to
+# decide what to auto-approve, so the flight tools must advertise that they move a real
+# aircraft: not read-only, not safe to retry blindly, and acting on the world outside.
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                             idempotentHint=True, openWorldHint=False)
+_FLIGHT = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                          idempotentHint=False, openWorldHint=True)
 
 
 async def off_loop(fn, *args):
@@ -211,7 +221,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     mcp = FastMCP("mavlink-mcp")
 
     # ------------------------------------------------------------------ read-only tools
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     async def get_status() -> str:
         """Current vehicle status: autopilot, mode, armed, altitude, position, battery, GPS, EKF."""
         err = await off_loop(session.ensure_connected)
@@ -228,7 +238,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
                          "only read-only tools are available)")
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     async def check_armable() -> str:
         """Is the vehicle ready to arm/take off? Returns 'ready' or the blocking reason
         (EKF settling, GPS fix, prearm failures)."""
@@ -238,13 +248,13 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         res = await off_loop(session.backend.arming_status)
         return res.message if res.ok else f"not ready: {res.message}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     async def describe_vehicle() -> str:
         """What is on the other end of the link: autopilot + firmware version, vehicle type,
         sensor health, fence, protocol capabilities. Discovered from the vehicle itself."""
         return await off_loop(session.vehicle_info)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     async def get_param(name: str) -> str:
         """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX, WPNAV_SPEED)."""
         err = await off_loop(session.ensure_connected)
@@ -256,7 +266,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         value = await off_loop(getter, name.upper())
         return f"{name.upper()} = {value:g}" if value is not None else f"{name.upper()}: not found"
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def capture_camera():
         """Capture the current camera frame so you can see what the drone sees.
         Returns the frame as an image. Needs the server started with --camera
@@ -287,34 +297,34 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return mcp
 
     # ------------------------------------------------------------------ flight tools
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def arm() -> str:
         """Arm the motors (waits until the vehicle is actually armable, reports the real
         prearm blocker if it cannot)."""
         return await off_loop(session.run_flight_tool, "arm", {})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def disarm() -> str:
         """Disarm the motors. Refused while airborne - land or rtl first."""
         return await off_loop(session.run_flight_tool, "disarm", {})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def takeoff(altitude_m: float = 10.0) -> str:
         """Arm if needed and take off, blocking until the target altitude is reached.
         The altitude is clamped to the safety limit and the vehicle's altitude fence."""
         return await off_loop(session.run_flight_tool, "takeoff", {"altitude_m": altitude_m})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def land() -> str:
         """Land at the current position; blocks until touched down and disarmed."""
         return await off_loop(session.run_flight_tool, "land", {})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def rtl() -> str:
         """Return to launch and land. Blocks until the vehicle is down and disarmed."""
         return await off_loop(session.run_flight_tool, "rtl", {})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def goto(latitude: float, longitude: float, altitude_m: Optional[float] = None) -> str:
         """Fly to a GPS position and block until arrival. Targets outside the geofence are
         pulled back inside it."""
@@ -322,7 +332,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
                               {"latitude": latitude, "longitude": longitude,
                                "altitude_m": altitude_m})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def move(direction: str, distance_m: float) -> str:
         """Move a distance in metres. Direction is one of: north, south, east, west,
         northeast, northwest, southeast, southwest (absolute), or forward, backward,
@@ -330,19 +340,19 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return await off_loop(session.run_flight_tool, "move",
                               {"direction": direction, "distance_m": distance_m})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def orbit(radius_m: float, clockwise: bool = True) -> str:
         """Fly one full circle around the current position, holding altitude. radius_m is
         required (1-100 m). Must already be airborne. Blocks until the circle is complete."""
         return await off_loop(session.run_flight_tool, "orbit",
                               {"radius_m": radius_m, "clockwise": clockwise})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def set_mode(mode: str) -> str:
         """Switch flight mode (GUIDED, LOITER, ALT_HOLD, AUTO, RTL, LAND)."""
         return await off_loop(session.run_flight_tool, "set_mode", {"mode": mode})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def set_param(name: str, value: float) -> str:
         """Set one autopilot parameter by exact name. The value is written as-is - check
         the parameter's valid range first. Writes that would switch off a fence or a
@@ -359,7 +369,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         res = await off_loop(setter, name.upper(), value)
         return res.message if res.ok else f"failed: {res.message}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def point_camera(pitch_deg: float = -90.0) -> str:
         """Point the camera gimbal (-90 = straight down, 0 = forward)."""
         err = await off_loop(session.ensure_connected)
@@ -371,7 +381,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         res = await off_loop(session.aim, pitch_deg)
         return res.message if res.ok else f"failed: {res.message}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=_FLIGHT)
     async def emergency_stop() -> str:
         """Immediately abort and return to launch. Use when something is wrong. Cancels a
         flight command that is still running instead of waiting for it to finish."""
