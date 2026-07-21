@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "mcp>=1.2",
     "pymavlink>=2.4.40",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
