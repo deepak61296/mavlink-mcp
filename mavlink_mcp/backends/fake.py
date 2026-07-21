@@ -30,7 +30,7 @@ class FakeBackend(RobotBackend):
         self.fence_alt_max_m = 100.0  # mirrors the FC's FENCE_ALT_MAX cap on goto altitude
         self._home_lat = None
         self._home_lon = None
-        self._params = {"FENCE_RADIUS": 150.0, "LOIT_SPEED_MS": 15.0, "WPNAV_SPEED": 1000.0}
+        self._params = {"FENCE_RADIUS": 150.0, "LOIT_SPEED_MS": 15.0, "WP_SPD": 10.0}
         self.gimbal_pitch_deg = 0.0
         self.gimbal_yaw_deg = 0.0
 

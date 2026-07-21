@@ -256,7 +256,9 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_READ_ONLY)
     async def get_param(name: str) -> str:
-        """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX, WPNAV_SPEED)."""
+        """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX). Note that
+        parameter names differ between firmware versions - if a name is not found,
+        the vehicle's firmware may use a different one."""
         err = await off_loop(session.ensure_connected)
         if err:
             return f"error: {err}"
