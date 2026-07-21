@@ -50,6 +50,25 @@ Then ask it something like *"take off to 20 m, fly 40 m north, orbit here at 15 
 
 No SITL? `mavlink-mcp --backend fake --enable-actuation` runs an in-memory drone with no ports.
 
+## With a camera, in Gazebo
+
+For a drone that can actually see something, there is a Gazebo field — roads, cars,
+buildings, markers — in [ardupilot_gazebo_ai](https://github.com/deepak61296/ardupilot_gazebo_ai):
+
+```bash
+git clone git@github.com:deepak61296/ardupilot_gazebo_ai.git
+cd ardupilot_gazebo_ai && bash scripts/setup_plugin.sh && bash scripts/sim_up.sh
+```
+
+then, in another terminal:
+
+```bash
+mavlink-mcp --enable-actuation --camera gazebo
+```
+
+Ask the agent to take off, point the camera down, fly north and take a photo, and it gets
+back a picture of the field.
+
 ## Tools
 
 Read-only (always on): `get_status`, `describe_vehicle`, `check_armable`, `get_param`,
@@ -76,6 +95,11 @@ Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `
 - `capture_camera` returns the frame as an MCP image, so a multimodal model can look at it. Point
   `--camera` at `gazebo`, an `rtsp://` URL, or `file:<path>`. `file:` is handy for a first
   test: point it at any JPEG and check your client actually renders what the drone "sees".
+
+Note on `--camera gazebo`: that stream is H.264 over UDP, which OpenCV can only read
+through GStreamer, and the `opencv-python` wheel is built without it. Use Ubuntu's
+`python3-opencv` (and `numpy<2` with it) for the Gazebo camera. `rtsp://` and `file:`
+work fine with the wheel.
 
 ## Safety
 

@@ -28,9 +28,12 @@ Where the project is and what's next. Kept short on purpose.
 - [x] rtl blocks until the vehicle is actually down, like land
 - [x] flown end to end from Codex CLI: takeoff, 10 moves, 2 orbits, camera, RTL
 
+- [x] Gazebo camera in the loop: flown and photographed through MCP over the field world
+      in ardupilot_gazebo_ai (roads, cars, buildings, markers)
+
 ## Next
 - [ ] PX4 backend (MAVSDK) — flight on PX4; detection already routes to it
-- [ ] Gazebo demo (record the drone flying a mission with the camera in the loop)
+- [ ] record the Gazebo flight as a GIF for the readme
 - [ ] detect_target / precision_land tools (ported from the drone-agent codebase)
 - [ ] sighting memory (recall / return-to what the drone saw)
 - [ ] waypoint missions (AUTO), not just point-to-point
