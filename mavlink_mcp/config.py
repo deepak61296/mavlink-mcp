@@ -34,6 +34,7 @@ class Settings:
     allow_unsafe_params: bool = False   # let set_param disable fences/failsafes
     camera: Optional[str] = None        # gazebo[:port] | rtsp://... | udp://... | file:<path>
     connect_timeout_s: float = 25.0
+    link_timeout_s: float = 5.0         # silence after which the link counts as lost
     limits: SafetyLimits = field(default_factory=SafetyLimits)
 
 
@@ -101,5 +102,6 @@ def load_settings(args) -> Settings:
                                  or safety_cfg.get("allow_unsafe_params", False)),
         camera=pick(args.camera, "CAMERA", camera_cfg.get("source"), None),
         connect_timeout_s=float(conn_cfg.get("timeout_s", 25.0)),
+        link_timeout_s=float(conn_cfg.get("link_timeout_s", 5.0)),
         limits=_limits_from(safety_cfg),
     )

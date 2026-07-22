@@ -16,6 +16,7 @@ os.environ.setdefault("MAVLINK20", "1")  # force MAVLink2 before importing pymav
 
 import math  # noqa: E402
 import queue  # noqa: E402
+import socket  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from concurrent.futures import Future  # noqa: E402
@@ -86,11 +87,38 @@ class MavlinkBackend(RobotBackend):
         self._version: Optional[dict] = None           # cached AUTOPILOT_VERSION info
 
     # ------------------------------------------------------------------ lifecycle
+    def _open(self, uri: str, timeout_s: float):
+        """Open the mavutil connection within timeout_s, converting failures to messages.
+
+        pymavlink connects a *blocking* socket with no timeout of its own (it only calls
+        setblocking(0) afterwards), so a peer that drops SYNs rather than refusing - a
+        firewalled host, a wrong address, a full listen backlog - leaves it in the kernel's
+        SYN retry for about two minutes per attempt. Since every tool waits on this, that
+        reads to the user as a server that has simply stopped answering. Bounding the socket
+        default and taking a single attempt keeps the failure inside timeout_s.
+        """
+        previous = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(max(1.0, timeout_s))
+        try:
+            return mavutil.mavlink_connection(
+                uri, source_system=255, source_component=0,
+                robust_parsing=True, autoreconnect=True, retries=0,
+            ), None
+        except (socket.timeout, TimeoutError):
+            return None, f"timed out after {timeout_s:.0f}s - no response"
+        except ConnectionRefusedError:
+            return None, "connection refused - nothing is listening there"
+        except OSError as exc:
+            return None, f"{exc.strerror or exc}"
+        except Exception as exc:                      # bad URI, unknown scheme, ...
+            return None, f"{type(exc).__name__}: {exc}"
+        finally:
+            socket.setdefaulttimeout(previous)
+
     def connect(self, uri: str, timeout_s: float = 30.0) -> CommandResult:
-        self._conn = mavutil.mavlink_connection(
-            uri, source_system=255, source_component=0,
-            robust_parsing=True, autoreconnect=True,
-        )
+        self._conn, err = self._open(uri, timeout_s)
+        if err is not None:
+            return CommandResult.failure(err, uri=uri)
         self._stop.clear()
         self._connected.clear()
         self._owner = threading.Thread(target=self._run, name="mavlink-owner", daemon=True)

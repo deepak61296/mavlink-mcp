@@ -13,6 +13,8 @@ Design rules:
 from __future__ import annotations
 
 import argparse
+import functools
+import inspect
 import threading
 import time
 from typing import Optional
@@ -43,6 +45,34 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
                              idempotentHint=True, openWorldHint=False)
 _FLIGHT = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
                           idempotentHint=False, openWorldHint=True)
+
+
+def guarded(fn):
+    """Turn any unexpected exception into a message the model can act on.
+
+    Without this the client sees FastMCP's 'Error executing tool rtl: [Errno 111] Connection
+    refused' - or, when the exception carries no message, an empty error - instead of
+    something that says what to do about it. A drone tool that fails should say so in words.
+    """
+    def message(exc: Exception) -> str:
+        return f"error: {str(exc) or type(exc).__name__}"
+
+    if not inspect.iscoroutinefunction(fn):      # capture_camera is sync: it only reads a buffer
+        @functools.wraps(fn)
+        def sync_wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                return message(exc)
+        return sync_wrapper
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:
+            return message(exc)
+    return wrapper
 
 
 async def off_loop(fn, *args):
@@ -201,10 +231,11 @@ class VehicleSession:
             return "blocked: another flight command is still running - wait for it to finish."
         try:
             res: CommandResult = self.tools[name].run(params)
-        except (ValueError, KeyError) as exc:
-            # bad/invalid argument (e.g. an unknown direction) - report it plainly so the
-            # model can correct itself, never surface a raw protocol error to the client.
-            return f"failed: {exc}\n{self.state_line()}"
+        except Exception as exc:
+            # Bad argument (an unknown direction), or the link failing mid-command. Either
+            # way the model gets words plus the vehicle's real state, never a raw traceback -
+            # it has an aircraft in the air and needs to know where it stands.
+            return f"failed: {exc or type(exc).__name__}\n{self.state_line()}"
         finally:
             self._act_lock.release()
         prefix = "" if res.ok else "failed: "
@@ -221,12 +252,13 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
             # says what is really there. Once the PX4/MAVSDK backend exists, "auto" will hand
             # a PX4 heartbeat over to it instead of refusing flight.
             from .backends.ardupilot import MavlinkBackend
-            backend = MavlinkBackend()
+            backend = MavlinkBackend(link_timeout_s=settings.link_timeout_s)
     session = VehicleSession(settings, backend)
     mcp = FastMCP("mavlink-mcp")
 
     # ------------------------------------------------------------------ read-only tools
     @mcp.tool(annotations=_READ_ONLY)
+    @guarded
     async def get_status() -> str:
         """Current vehicle status: autopilot, mode, armed, altitude, position, battery, GPS, EKF."""
         err = await off_loop(session.ensure_connected)
@@ -244,6 +276,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return "\n".join(lines)
 
     @mcp.tool(annotations=_READ_ONLY)
+    @guarded
     async def check_armable() -> str:
         """Is the vehicle ready to arm/take off? Returns 'ready' or the blocking reason
         (EKF settling, GPS fix, prearm failures)."""
@@ -254,12 +287,14 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return res.message if res.ok else f"not ready: {res.message}"
 
     @mcp.tool(annotations=_READ_ONLY)
+    @guarded
     async def describe_vehicle() -> str:
         """What is on the other end of the link: autopilot + firmware version, vehicle type,
         sensor health, fence, protocol capabilities. Discovered from the vehicle itself."""
         return await off_loop(session.vehicle_info)
 
     @mcp.tool(annotations=_READ_ONLY)
+    @guarded
     async def get_param(name: str) -> str:
         """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX). Note that
         parameter names differ between firmware versions - if a name is not found,
@@ -274,6 +309,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return f"{name.upper()} = {value:g}" if value is not None else f"{name.upper()}: not found"
 
     @mcp.tool(annotations=_READ_ONLY)
+    @guarded
     def capture_camera():
         """Capture the current camera frame so you can see what the drone sees.
         Returns the frame as an image. Needs the server started with --camera
@@ -288,11 +324,13 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     # ------------------------------------------------------------------ resources
     @mcp.resource("mavlink://vehicle")
+    @guarded
     async def vehicle_resource() -> str:
         """Vehicle identity: autopilot, firmware, type, sensors, capabilities."""
         return await off_loop(session.vehicle_info)
 
     @mcp.resource("mavlink://telemetry")
+    @guarded
     async def telemetry_resource() -> str:
         """Live telemetry snapshot (mode, position, altitude, battery, GPS, EKF)."""
         err = await off_loop(session.ensure_connected)
@@ -305,33 +343,39 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     # ------------------------------------------------------------------ flight tools
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def arm() -> str:
         """Arm the motors (waits until the vehicle is actually armable, reports the real
         prearm blocker if it cannot)."""
         return await off_loop(session.run_flight_tool, "arm", {})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def disarm() -> str:
         """Disarm the motors. Refused while airborne - land or rtl first."""
         return await off_loop(session.run_flight_tool, "disarm", {})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def takeoff(altitude_m: float = 10.0) -> str:
         """Arm if needed and take off, blocking until the target altitude is reached.
         The altitude is clamped to the safety limit and the vehicle's altitude fence."""
         return await off_loop(session.run_flight_tool, "takeoff", {"altitude_m": altitude_m})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def land() -> str:
         """Land at the current position; blocks until touched down and disarmed."""
         return await off_loop(session.run_flight_tool, "land", {})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def rtl() -> str:
         """Return to launch and land. Blocks until the vehicle is down and disarmed."""
         return await off_loop(session.run_flight_tool, "rtl", {})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def goto(latitude: float, longitude: float, altitude_m: Optional[float] = None) -> str:
         """Fly to a GPS position and block until arrival. Targets outside the geofence are
         pulled back inside it."""
@@ -340,6 +384,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
                                "altitude_m": altitude_m})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def move(direction: str, distance_m: float) -> str:
         """Move a distance in metres. Direction is one of: north, south, east, west,
         northeast, northwest, southeast, southwest (absolute), or forward, backward,
@@ -348,6 +393,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
                               {"direction": direction, "distance_m": distance_m})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def orbit(radius_m: float, clockwise: bool = True) -> str:
         """Fly one full circle around the current position, holding altitude. radius_m is
         required (1-100 m). Must already be airborne. Blocks until the circle is complete."""
@@ -355,11 +401,13 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
                               {"radius_m": radius_m, "clockwise": clockwise})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def set_mode(mode: str) -> str:
         """Switch flight mode (GUIDED, LOITER, ALT_HOLD, AUTO, RTL, LAND)."""
         return await off_loop(session.run_flight_tool, "set_mode", {"mode": mode})
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def set_param(name: str, value: float) -> str:
         """Set one autopilot parameter by exact name. The value is written as-is - check
         the parameter's valid range first. Writes that would switch off a fence or a
@@ -377,6 +425,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return res.message if res.ok else f"failed: {res.message}"
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def point_camera(pitch_deg: float = -90.0) -> str:
         """Point the camera gimbal (-90 = straight down, 0 = forward)."""
         err = await off_loop(session.ensure_connected)
@@ -389,6 +438,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return res.message if res.ok else f"failed: {res.message}"
 
     @mcp.tool(annotations=_FLIGHT)
+    @guarded
     async def emergency_stop() -> str:
         """Immediately abort and return to launch. Use when something is wrong. Cancels a
         flight command that is still running instead of waiting for it to finish."""
