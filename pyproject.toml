@@ -36,3 +36,8 @@ Issues = "https://github.com/deepak61296/mavlink-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mavlink_mcp"]
+
+[tool.pytest.ini_options]
+# The sitl suite needs a running ArduPilot SITL, so it is opt-in: `pytest -m sitl`.
+addopts = "-m 'not sitl'"
+markers = ["sitl: needs a live ArduPilot SITL on MAVLINK_MCP_TEST_CONN (default tcp:127.0.0.1:5760)"]
