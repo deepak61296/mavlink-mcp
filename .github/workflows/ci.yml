@@ -18,3 +18,30 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: flake8 mavlink_mcp tests --max-line-length=110
       - run: pytest -q
+
+  package:
+    # The readme's first line is `pip install mavlink-mcp`, so a build that does not install
+    # cleanly is a broken front page. Checks metadata, then proves the wheel actually runs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: install the wheel on its own and start the server
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+          /tmp/fresh/bin/mavlink-mcp --version
+          /tmp/fresh/bin/python -c "
+          import importlib.metadata as m, mavlink_mcp
+          assert m.version('mavlink-mcp') == mavlink_mcp.__version__
+          from mavlink_mcp.server import build_server, Settings
+          import asyncio
+          tools = asyncio.run(build_server(Settings(backend='fake', enable_actuation=True)).list_tools())
+          assert len(tools) == 18, len(tools)
+          print('wheel ok:', len(tools), 'tools')
+          "

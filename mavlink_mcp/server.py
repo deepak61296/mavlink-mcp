@@ -128,8 +128,14 @@ class VehicleSession:
         self._interrupt = threading.Event()
         self.tools = build_flight_tools(backend, settings.limits, interrupt=self._interrupt)
         self.frames: Optional[cam.FrameHub] = None
+        self.camera_problem: Optional[str] = None
         if settings.camera:
-            source = cam.make_frame_source(settings.camera)
+            try:
+                source = cam.make_frame_source(settings.camera)
+            except RuntimeError as exc:
+                # Not fatal: the flight and telemetry tools are still worth having, and an
+                # MCP client that sees the server die at startup reports nothing useful.
+                self.camera_problem, source = str(exc), None
             if source is not None:
                 self.frames = cam.FrameHub(source).start()
         self.aim = cam.make_gimbal_aim(backend, settings.camera)
@@ -358,6 +364,8 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         """Capture the current camera frame so you can see what the drone sees.
         Returns the frame as an image. Needs the server started with --camera
         (gazebo, an rtsp:// URL, or file:<path>)."""
+        if session.camera_problem:
+            return f"camera unavailable: {session.camera_problem}"
         if session.frames is None:
             return ("no camera configured. Start the server with --camera gazebo (SITL), "
                     "--camera rtsp://... (real vehicle) or --camera file:<path>.")

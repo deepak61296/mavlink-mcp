@@ -4,18 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mavlink-mcp"
-version = "0.1.0"
+dynamic = ["version"]        # single-sourced from mavlink_mcp/__init__.py
 description = "MCP server for MAVLink drones: safety-gated flight tools and live camera frames for Claude, Codex and any MCP client. ArduPilot today, PX4 next."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "deepak61296" }]
 keywords = ["mcp", "mavlink", "ardupilot", "px4", "drone", "uav", "llm", "sitl"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
 ]
 dependencies = [
     "mcp>=1.2",
@@ -32,10 +40,20 @@ mavlink-mcp = "mavlink_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/deepak61296/mavlink-mcp"
+Repository = "https://github.com/deepak61296/mavlink-mcp"
 Issues = "https://github.com/deepak61296/mavlink-mcp/issues"
+Changelog = "https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md"
+
+[tool.hatch.version]
+path = "mavlink_mcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mavlink_mcp"]
+
+[tool.hatch.build.targets.sdist]
+# Ship what makes the package auditable and reproducible; leave out local scaffolding.
+include = ["mavlink_mcp", "tests", "scripts", "integrations",
+           "README.md", "STATUS.md", "LICENSE", "pyproject.toml", ".flake8"]
 
 [tool.pytest.ini_options]
 # The sitl suite needs a running ArduPilot SITL, so it is opt-in: `pytest -m sitl`.

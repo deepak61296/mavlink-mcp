@@ -167,7 +167,7 @@ The default backend is `auto`: the server reads the autopilot type from the firs
 ArduPilot works today and is what the test suite flies. PX4 is recognised from its heartbeat
 and flight is refused on it until the PX4 backend (MAVSDK) lands; the read-only tools are
 plain MAVLink and should work, but nothing here has been run against PX4 yet — see
-[STATUS.md](STATUS.md).
+[STATUS.md](https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md).
 
 `scripts/mission_demo.py` is a small example that drives the server over MCP and flies a mission.
 

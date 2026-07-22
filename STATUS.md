@@ -50,11 +50,27 @@ Where the project is and what's next. Kept short on purpose.
 - [ ] downscale big camera frames (a 4K JPEG is too large for most clients)
 - [ ] test on real hardware
 
+## Releasing
+
+The package builds clean and the wheel is verified to install and fly on its own; the only
+step left is the upload, which needs a PyPI token.
+
+```bash
+python -m build            # sdist + wheel into dist/
+twine check dist/*         # metadata and readme rendering
+twine upload dist/*        # needs a PyPI API token
+```
+
+Bump `__version__` in `mavlink_mcp/__init__.py` first — the packaging version is read from
+there, so it is the only place it lives. CI builds and installs the wheel on every push, so
+a packaging break shows up before a release, not during one.
+
 ## Known gaps
 - Not on PyPI yet, so the `pip install mavlink-mcp` in the readme does not work.
 - PX4 is detected but nothing has ever been run against PX4 SITL.
 - The `[camera]` extra installs `opencv-python`, which has no GStreamer and so cannot read
-  the Gazebo stream; `rtsp://` and `file:` are fine. Documented in the readme, not yet fixed.
+  the Gazebo stream; `rtsp://` and `file:` are fine. The server now says so plainly instead
+  of producing empty frames, but the extra still cannot give you a working Gazebo camera.
 - `camera.py` hardcodes the Gazebo world name in the gimbal joint topic.
 - FrameHub has no shutdown path; it dies with the process.
 

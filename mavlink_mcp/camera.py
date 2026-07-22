@@ -205,18 +205,44 @@ class StreamCamera:
             self._cap = None
 
 
+def gstreamer_missing() -> Optional[str]:
+    """Why this OpenCV cannot read a GStreamer pipeline, or None if it can.
+
+    The `opencv-python` wheel on PyPI is built with GStreamer OFF, so `--camera gazebo`
+    against it produces no frames and no error - the capture simply never opens. Saying so
+    once, in words, beats an agent reporting "the camera is not working" forever.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return ("OpenCV is not installed. Install it with GStreamer support - on Ubuntu "
+                "`apt install python3-opencv` (and pin numpy<2, which that build needs).")
+    if "GStreamer:                   NO" in cv2.getBuildInformation():
+        return ("this OpenCV was built without GStreamer, so it cannot read the Gazebo "
+                "H.264 stream. The opencv-python wheel is always built that way; use "
+                "Ubuntu's `apt install python3-opencv` (and pin numpy<2) instead. "
+                "rtsp:// and file: sources work with either build.")
+    return None
+
+
 def make_frame_source(spec: Optional[str]) -> Optional[Callable[[], Optional[bytes]]]:
     """Build a frame source from a spec string.
 
     'file:<path>'        a static/snapshot image file
     'gazebo[:<port>]'    Gazebo GstCameraPlugin UDP H.264 stream (default port 5600)
     'rtsp://...' / 'udp://...' / 'http://...'   any stream OpenCV can open (e.g. a real drone)
+
+    Raises RuntimeError when the requested source cannot possibly work with the OpenCV that
+    is installed, so the problem surfaces at startup rather than as permanently empty frames.
     """
     if not spec:
         return None
     if spec.startswith("file:"):
         return file_frame_source(spec[len("file:"):])
     if spec == "gazebo" or spec.startswith("gazebo:"):
+        problem = gstreamer_missing()
+        if problem:
+            raise RuntimeError(f"--camera {spec}: {problem}")
         port = int(spec.split(":", 1)[1]) if ":" in spec else 5600
         return StreamCamera(_gst_udp_h264(port), gstreamer=True)
     return StreamCamera(spec)
