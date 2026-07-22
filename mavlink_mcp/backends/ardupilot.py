@@ -49,6 +49,12 @@ PARAM_TIMEOUT_S = 5.0
 PARAM_ATTEMPTS = 2
 _PARAM_WAIT_S = PARAM_TIMEOUT_S * PARAM_ATTEMPTS + 4.0
 
+# Reader backoff after a failed read. Fast at first so a brief blip costs nothing, then slow,
+# because a link that is properly down should not generate reconnect chatter forever.
+RETRY_FAST_S = 0.1
+RETRY_FAST_TRIES = 10
+RETRY_SLOW_S = 1.0
+
 
 @dataclass
 class _Fence:
@@ -196,18 +202,27 @@ class MavlinkBackend(RobotBackend):
         self._autopilot = heartbeat.autopilot
         self._vehicle_type = heartbeat.type
         self._connected.set()
+        failures = 0
         while not self._stop.is_set():
             try:
                 self._drain_commands()
-                self._maybe_heartbeat()
+                if not self._link_down:
+                    # Pointless while the link is down - there is nobody to hear it - and each
+                    # attempted write is another reconnect for pymavlink to announce. The FC
+                    # sees the GCS go silent and runs its own failsafe, which is what we want.
+                    self._maybe_heartbeat()
                 msg = self._conn.recv_match(blocking=True, timeout=0.5)
                 if msg is not None:
                     self._update_telemetry(msg)
+                failures = 0
             except Exception:
                 # Link down: pymavlink is retrying the socket underneath. Back off so a
                 # refusing peer can't spin this thread - a reconnect shows up as messages
-                # simply starting to arrive again.
-                time.sleep(0.1)
+                # simply starting to arrive again. The backoff widens because pymavlink
+                # prints a line per reconnect attempt, and a link that has been down for a
+                # minute does not need thirteen attempts a second scrolling past the operator.
+                failures += 1
+                time.sleep(RETRY_FAST_S if failures <= RETRY_FAST_TRIES else RETRY_SLOW_S)
             # Outside the try on purpose: the loudest failure is the one that raises here
             # every pass, and that is exactly when the link must be marked down.
             self._check_link_stale()
