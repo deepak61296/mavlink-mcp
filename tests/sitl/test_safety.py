@@ -42,7 +42,19 @@ def test_ordinary_parameters_still_write(grounded):
 
 
 def test_unknown_parameter_is_reported_honestly(grounded):
-    assert "not found" in grounded.call("get_param", name="ZZ_DOES_NOT_EXIST")
+    """ArduPilot answers an unknown parameter with silence, which is also what a lost
+    request looks like - so the reply must not assert the parameter does not exist."""
+    out = grounded.call("get_param", name="ZZ_DOES_NOT_EXIST")
+    assert "no reply" in out
+    assert "not found" not in out
+
+
+def test_a_real_parameter_still_reads_back(grounded):
+    assert "FENCE_ALT_MAX = " in grounded.call("get_param", name="FENCE_ALT_MAX")
+
+
+def test_wait_holds_position_and_is_not_marked_destructive(drone):
+    assert "waited" in drone.call("wait", seconds=3)
 
 
 def test_above_the_configured_ceiling_is_refused_by_the_schema(grounded):

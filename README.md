@@ -164,8 +164,10 @@ Flags and env vars override the file.
 ## Autopilot support
 
 The default backend is `auto`: the server reads the autopilot type from the first heartbeat.
-ArduPilot works today. PX4 is recognised and the read-only tools work on it, but flight is
-refused until the PX4 backend (MAVSDK) is done — see [STATUS.md](STATUS.md).
+ArduPilot works today and is what the test suite flies. PX4 is recognised from its heartbeat
+and flight is refused on it until the PX4 backend (MAVSDK) lands; the read-only tools are
+plain MAVLink and should work, but nothing here has been run against PX4 yet — see
+[STATUS.md](STATUS.md).
 
 `scripts/mission_demo.py` is a small example that drives the server over MCP and flies a mission.
 

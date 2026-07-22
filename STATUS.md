@@ -30,6 +30,16 @@ Where the project is and what's next. Kept short on purpose.
 
 - [x] Gazebo camera in the loop: flown and photographed through MCP over the field world
       in ardupilot_gazebo_ai (roads, cars, buildings, markers)
+- [x] survives link loss: the reader no longer dies on a dropped link, telemetry that stopped
+      arriving is reported as LINK DOWN instead of served as current, and the link recovers
+      on its own when the vehicle comes back
+- [x] connect is bounded by connect_timeout_s, and a missing vehicle is reported in words
+      rather than as a raw socket error
+- [x] arguments: nonsense is refused (negative altitude, latitude 91), over-limit is clamped
+      *and said so*, and every bound is advertised in the tool schema
+- [x] actuation gate is loopback-only: `udpin:0.0.0.0` needs --allow-real-vehicle
+- [x] tests/sitl: 31 checks that fly a real SITL mission through the MCP protocol
+- [x] pi bridge extension (pi ships no MCP client of its own)
 
 ## Next
 - [ ] PX4 backend (MAVSDK) — flight on PX4; detection already routes to it
@@ -40,7 +50,17 @@ Where the project is and what's next. Kept short on purpose.
 - [ ] downscale big camera frames (a 4K JPEG is too large for most clients)
 - [ ] test on real hardware
 
+## Known gaps
+- Not on PyPI yet, so the `pip install mavlink-mcp` in the readme does not work.
+- PX4 is detected but nothing has ever been run against PX4 SITL.
+- The `[camera]` extra installs `opencv-python`, which has no GStreamer and so cannot read
+  the Gazebo stream; `rtsp://` and `file:` are fine. Documented in the readme, not yet fixed.
+- `camera.py` hardcodes the Gazebo world name in the gimbal joint topic.
+- FrameHub has no shutdown path; it dies with the process.
+
 ## Notes
 - pymavlink today; MAVSDK comes with the PX4 backend.
 - ArduPilot flight works; PX4 is detected but flight is refused until its backend lands.
 - This machine's SITL: wipe eeprom (`-w`) if it won't boot after a hard kill.
+- ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
+  and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.

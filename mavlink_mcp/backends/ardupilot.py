@@ -30,8 +30,6 @@ from ..interfaces import (  # noqa: E402
     Capability,
     CommandResult,
     Primitive,
-    PrimitiveSpec,
-    RiskTier,
     RobotBackend,
     Telemetry,
 )
@@ -42,6 +40,14 @@ _EKF_POS_HORIZ_ABS = 1 << 4  # EKF_STATUS_REPORT flag: absolute horizontal posit
 # Seconds of silence before the link counts as down. Matches MAVProxy's 'timeout' default;
 # telemetry streams at several Hz, so 5 s of nothing is already well past a dropped packet.
 LINK_TIMEOUT_S = 5.0
+
+# One parameter exchange, and how many times a user-facing read repeats it. The future that
+# waits on the owner thread must outlast the work it queued, so both live here rather than as
+# scattered literals: raising the retry count without raising the wait is how a healthy read
+# turns into "error: TimeoutError".
+PARAM_TIMEOUT_S = 5.0
+PARAM_ATTEMPTS = 2
+_PARAM_WAIT_S = PARAM_TIMEOUT_S * PARAM_ATTEMPTS + 4.0
 
 
 @dataclass
@@ -351,19 +357,28 @@ class MavlinkBackend(RobotBackend):
         )
         return CommandResult.success("telemetry streams requested")
 
-    def _do_get_param(self, name: str, timeout: float = 5.0) -> Optional[float]:
-        """Read one parameter, keeping telemetry fresh while we wait. Owner-thread only."""
-        self._conn.mav.param_request_read_send(
-            self._conn.target_system, self._conn.target_component, name.encode(), -1)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            self._maybe_heartbeat()
-            msg = self._conn.recv_match(blocking=True, timeout=max(0.0, deadline - time.time()))
-            if msg is None:
-                break
-            if msg.get_type() == "PARAM_VALUE" and msg.param_id == name:
-                return float(msg.param_value)
-            self._update_telemetry(msg)
+    def _do_get_param(self, name: str, timeout: float = PARAM_TIMEOUT_S,
+                      attempts: int = 1) -> Optional[float]:
+        """Read one parameter, keeping telemetry fresh while we wait. Owner-thread only.
+
+        attempts > 1 is for parameters the caller cannot vouch for: ArduPilot answers an
+        unknown parameter with silence, byte for byte the same as a request that got lost, so
+        one timeout cannot tell "no such parameter" from "try again". Internal reads keep the
+        default of one attempt - they ask for parameters that certainly exist, and connect()
+        should not spend a retry budget on them.
+        """
+        for _ in range(max(1, attempts)):
+            self._conn.mav.param_request_read_send(
+                self._conn.target_system, self._conn.target_component, name.encode(), -1)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                self._maybe_heartbeat()
+                msg = self._conn.recv_match(blocking=True, timeout=max(0.0, deadline - time.time()))
+                if msg is None:
+                    break
+                if msg.get_type() == "PARAM_VALUE" and msg.param_id == name:
+                    return float(msg.param_value)
+                self._update_telemetry(msg)
         return None
 
     def _do_set_param(self, name: str, value: float, timeout: float = 5.0) -> CommandResult:
@@ -436,7 +451,9 @@ class MavlinkBackend(RobotBackend):
     def get_param(self, name: str) -> Optional[float]:
         if not self.is_connected:
             return None
-        return self._submit(lambda: self._do_get_param(name)).result(timeout=8)
+        return self._submit(
+            lambda: self._do_get_param(name, attempts=PARAM_ATTEMPTS)
+        ).result(timeout=_PARAM_WAIT_S)
 
     def set_param(self, name: str, value: float) -> CommandResult:
         err = self.link_error()
@@ -623,19 +640,4 @@ class MavlinkBackend(RobotBackend):
         return self.set_mode("RTL")
 
     def capabilities(self) -> Capability:
-        return Capability(
-            modes=list(_MODES),
-            primitives=[
-                PrimitiveSpec(
-                    "takeoff", "Take off to a target altitude above the launch point",
-                    {"type": "object",
-                     "properties": {"altitude_m": {"type": "number", "minimum": 1, "maximum": 120}},
-                     "required": ["altitude_m"]},
-                    RiskTier.HIGH,
-                ),
-                PrimitiveSpec("land", "Land at the current position",
-                              {"type": "object", "properties": {}}, RiskTier.HIGH),
-                PrimitiveSpec("rtl", "Return to launch and land",
-                              {"type": "object", "properties": {}}, RiskTier.HIGH),
-            ],
-        )
+        return Capability(modes=list(_MODES))

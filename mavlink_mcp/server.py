@@ -16,6 +16,7 @@ Design rules:
 import argparse
 import functools
 import inspect
+import ipaddress
 import threading
 import time
 from typing import Annotated, Literal, Optional
@@ -35,7 +36,7 @@ from .backends import (
     vehicle_type_name,
 )
 from .config import Settings, load_settings
-from .flight import AgentTool, build_flight_tools, format_telemetry
+from .flight import build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
 from .safety import param_block, reject
 
@@ -47,6 +48,10 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
                              idempotentHint=True, openWorldHint=False)
 _FLIGHT = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
                           idempotentHint=False, openWorldHint=True)
+# Holding position acts on the world but breaks nothing; saying "destructive" here would
+# train an operator to click through the prompts that do matter.
+_HOLD = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                        idempotentHint=False, openWorldHint=True)
 
 
 def guarded(fn):
@@ -90,15 +95,24 @@ async def off_loop(fn, *args):
 
 
 def is_local_sim_uri(uri: str) -> bool:
-    """True when the connection can only be a simulator on this machine.
+    """True only when the link cannot reach anything except this machine.
 
-    SITL is reached over tcp/udp to localhost. Serial devices and remote hosts are treated
-    as potentially real vehicles and gated behind --allow-real-vehicle.
+    The bar is loopback, not "looks like a laptop". 0.0.0.0 and an empty host mean *bind
+    every interface*, which is exactly how a real vehicle's telemetry radio or companion
+    computer reaches a ground station - so `udpin:0.0.0.0:14550` must not count as a
+    simulator, however often it is typed while testing. Serial devices and remote hosts
+    were already excluded; these two were the hole.
     """
     parts = uri.split(":")
-    if parts[0] in ("tcp", "tcpin", "udp", "udpin", "udpout") and len(parts) >= 2:
-        return parts[1] in ("127.0.0.1", "localhost", "0.0.0.0", "")
-    return False
+    if parts[0] not in ("tcp", "tcpin", "udp", "udpin", "udpout") or len(parts) < 2:
+        return False
+    host = parts[1].strip()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class VehicleSession:
@@ -112,9 +126,7 @@ class VehicleSession:
         self._connect_error: Optional[str] = None
         # Set to abort a blocking flight tool mid-flight; every poll loop watches it.
         self._interrupt = threading.Event()
-        self.tools: dict[str, AgentTool] = {
-            t.name: t for t in build_flight_tools(backend, settings.limits,
-                                                  interrupt=self._interrupt)}
+        self.tools = build_flight_tools(backend, settings.limits, interrupt=self._interrupt)
         self.frames: Optional[cam.FrameHub] = None
         if settings.camera:
             source = cam.make_frame_source(settings.camera)
@@ -237,7 +249,7 @@ class VehicleSession:
         if not self._act_lock.acquire(blocking=False):
             return "blocked: another flight command is still running - wait for it to finish."
         try:
-            res: CommandResult = self.tools[name].run(params)
+            res: CommandResult = self.tools[name](params)
         except Exception as exc:
             # Bad argument (an unknown direction), or the link failing mid-command. Either
             # way the model gets words plus the vehicle's real state, never a raw traceback -
@@ -274,6 +286,9 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     Distance = Annotated[float, Field(gt=0, le=lim.max_move_m, description="metres")]
     Radius = Annotated[float, Field(gt=0, le=lim.max_orbit_radius_m, description="metres")]
     Latitude = Annotated[float, Field(ge=-90, le=90)]
+    Seconds = Annotated[float, Field(gt=0, le=lim.max_wait_s, description="seconds to hover")]
+    Pitch = Annotated[float, Field(ge=-180, le=180,
+                                   description="degrees; -90 straight down, 0 forward")]
     Longitude = Annotated[float, Field(ge=-180, le=180)]
     Direction = Literal[tuple(geo.direction_names())]           # type: ignore[valid-type]
     Mode = Literal[tuple(backend.capabilities().modes)]         # type: ignore[valid-type]
@@ -328,7 +343,14 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         if getter is None:
             return "error: this backend does not expose parameters"
         value = await off_loop(getter, name.upper())
-        return f"{name.upper()} = {value:g}" if value is not None else f"{name.upper()}: not found"
+        if value is not None:
+            return f"{name.upper()} = {value:g}"
+        # Deliberately not "not found": the vehicle stays silent both for a parameter it does
+        # not have and for a request that never arrived, and the difference matters to whoever
+        # is deciding whether the name is wrong or the link is.
+        return (f"{name.upper()}: no reply after 2 requests - either this firmware has no such "
+                "parameter, or the request was lost. Names move between versions "
+                "(WPNAV_SPEED is WP_SPD on current master).")
 
     @mcp.tool(annotations=_READ_ONLY)
     @guarded
@@ -423,6 +445,13 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         return await off_loop(session.run_flight_tool, "orbit",
                               {"radius_m": radius_m, "clockwise": clockwise})
 
+    @mcp.tool(annotations=_HOLD)
+    @guarded
+    async def wait(seconds: Seconds) -> str:
+        """Hover in place for a number of seconds, then report the vehicle's state. Use it
+        to let the aircraft settle before taking a photo, or to observe from one spot."""
+        return await off_loop(session.run_flight_tool, "wait", {"seconds": seconds})
+
     @mcp.tool(annotations=_FLIGHT)
     @guarded
     async def set_mode(mode: Mode) -> str:
@@ -449,7 +478,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def point_camera(pitch_deg: float = -90.0) -> str:
+    async def point_camera(pitch_deg: Pitch = -90.0) -> str:
         """Point the camera gimbal (-90 = straight down, 0 = forward)."""
         err = await off_loop(session.ensure_connected)
         if err:

@@ -15,9 +15,26 @@ def _session(**kw) -> VehicleSession:
 def test_local_sim_uri_detection():
     assert is_local_sim_uri("tcp:127.0.0.1:5760")
     assert is_local_sim_uri("udp:localhost:14550")
+    assert is_local_sim_uri("udpin:127.0.0.1:14550")
+    assert is_local_sim_uri("tcp:127.0.0.2:5760")          # all of 127/8 is loopback
     assert not is_local_sim_uri("tcp:192.168.1.50:5760")
     assert not is_local_sim_uri("/dev/ttyACM0")
     assert not is_local_sim_uri("serial:/dev/ttyUSB0:57600")
+
+
+def test_binding_every_interface_is_not_a_simulator():
+    """udpin:0.0.0.0 is how a real vehicle's radio reaches a GCS, not a SITL-only endpoint."""
+    assert not is_local_sim_uri("udpin:0.0.0.0:14550")
+    assert not is_local_sim_uri("udp::14550")
+    assert not is_local_sim_uri("tcpin:0.0.0.0:5760")
+
+
+def test_actuation_on_a_wide_open_bind_needs_the_real_vehicle_flag():
+    blocked = _session(enable_actuation=True, conn="udpin:0.0.0.0:14550").actuation_block()
+    assert blocked and "real-vehicle" in blocked
+    allowed = _session(enable_actuation=True, allow_real_vehicle=True,
+                       conn="udpin:0.0.0.0:14550").actuation_block()
+    assert allowed is None
 
 
 def test_actuation_disabled_by_default():
