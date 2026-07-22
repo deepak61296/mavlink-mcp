@@ -1,17 +1,15 @@
-"""Safety layer: hard clamps the model cannot override, plus an approval gate.
+"""Safety layer: what the model is not allowed to talk the vehicle into.
 
-The autopilot's geofence and failsafes are the real safety net; these clamps are a second
-line so a hallucinated argument can't command something absurd. Limits mirror the old
-backend's envelope (takeoff/move/goto/speed caps), trimmed to sane SITL-test defaults.
+Three different questions, deliberately answered differently. reject() refuses arguments
+that are nonsense at any setting. clamp_noted() trims arguments that are merely past a
+configured limit, and says so. param_block() refuses writes that would switch off the
+autopilot's own geofence and failsafes, which are the real safety net underneath all of this.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
 
-from .interfaces import RiskTier, Telemetry
-
-_AIRBORNE_M = 1.0  # alt above which the vehicle is considered flying
 
 # Parameters that ARE the safety net. For every one of these a value of zero means "off":
 # no fence, no failsafe, no prearm check. An agent that writes one of these disarms the
@@ -95,23 +93,6 @@ def reject(params: dict) -> Optional[str]:
     return None
 
 
-def preflight_check(tool_name: str, params: dict, tel: Telemetry) -> Optional[str]:
-    """Hard, state-dependent safety rules the model cannot override.
-
-    Returns a block reason (fed back to the model so it can adapt, e.g. land before disarm),
-    or None if the action is allowed in the current state. Distinct from the approval gate,
-    which is the operator's yes/no on risky-but-allowed actions.
-    """
-    airborne = (tel.alt_rel_m or 0) > _AIRBORNE_M
-    if tool_name == "disarm" and airborne:
-        return f"airborne at {tel.alt_rel_m:.1f} m - land or rtl before disarming"
-    if tool_name == "takeoff" and airborne:
-        return f"already airborne at {tel.alt_rel_m:.1f} m - cannot take off again"
-    if tool_name in ("move", "goto") and not tel.armed:
-        return "vehicle is not armed - take off before moving"
-    return None
-
-
 def param_block(name: str, value: float, allow_unsafe: bool = False) -> Optional[str]:
     """Reason this parameter write is refused, or None if it is allowed.
 
@@ -124,17 +105,3 @@ def param_block(name: str, value: float, allow_unsafe: bool = False) -> Optional
         return (f"setting {name.upper()} to {value:g} would turn off {what}. "
                 "Restart the server with --allow-unsafe-params if that is really intended.")
     return None
-
-
-def auto_approve(tool_name: str, params: dict, risk: RiskTier) -> bool:
-    """Approve everything. Used for automated tests and unattended runs."""
-    return True
-
-
-def terminal_confirm(tool_name: str, params: dict, risk: RiskTier) -> bool:
-    """Ask the operator y/n for HIGH/CRITICAL actions; auto-approve LOW/MEDIUM."""
-    if risk in (RiskTier.LOW, RiskTier.MEDIUM):
-        return True
-    detail = " ".join(f"{k}={v}" for k, v in params.items())
-    answer = input(f"  confirm {risk.value.upper()} action '{tool_name}' {detail}? [y/N] ").strip().lower()
-    return answer in ("y", "yes")

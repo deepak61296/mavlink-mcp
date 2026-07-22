@@ -9,31 +9,13 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import geo
-from .interfaces import CommandResult, Primitive, RiskTier, RobotBackend, Telemetry
+from .interfaces import CommandResult, Primitive, RobotBackend, Telemetry
 from .safety import SafetyLimits, clamp, clamp_noted
 
 ARRIVE_RADIUS_M = 2.5
-
-
-@dataclass
-class AgentTool:
-    name: str
-    description: str
-    parameters: dict          # JSON schema for the LLM
-    risk: RiskTier
-    run: Callable[[dict], CommandResult]
-
-
-def to_ollama_tools(tools: list[AgentTool]) -> list[dict]:
-    return [
-        {"type": "function",
-         "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
-        for t in tools
-    ]
 
 
 def format_telemetry(t: Telemetry) -> str:
@@ -75,10 +57,13 @@ def poll_until(backend: RobotBackend, predicate: Callable[[Telemetry], bool],
 
 def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = None,
                        interrupt: Optional[threading.Event] = None,
-                       arm_timeout_s: float = 45.0) -> list[AgentTool]:
-    """Construct the standard copter tool set bound to this backend."""
+                       arm_timeout_s: float = 45.0) -> dict[str, Callable[[dict], CommandResult]]:
+    """The copter verbs, bound to this backend, keyed by name.
+
+    Descriptions and JSON schemas deliberately do not live here: server.py derives them from
+    the tool signatures so there is exactly one place a bound can be wrong.
+    """
     lim = limits or SafetyLimits()
-    modes = backend.capabilities().modes
 
     def get_status(_: dict) -> CommandResult:
         return CommandResult.success(format_telemetry(backend.get_telemetry()))
@@ -254,49 +239,8 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         turn = "clockwise" if cw else "counter-clockwise"
         return CommandResult.success(f"flew a {radius:.0f} m circle ({turn}){note}")
 
-    no_params = {"type": "object", "properties": {}}
-    return [
-        AgentTool("get_status", "Get current vehicle telemetry (mode, armed, altitude, battery, GPS).",
-                  no_params, RiskTier.LOW, get_status),
-        AgentTool("check_armable", "Check if the vehicle is ready to arm / take off (position "
-                  "estimate, GPS, prearm). Returns 'ready' or the blocking reason.",
-                  no_params, RiskTier.LOW, check_armable),
-        AgentTool("set_mode", "Switch flight mode.",
-                  {"type": "object",
-                   "properties": {"mode": {"type": "string", "enum": modes}},
-                   "required": ["mode"]}, RiskTier.MEDIUM, set_mode),
-        AgentTool("arm", "Arm the motors (required before takeoff).", no_params, RiskTier.HIGH, arm),
-        AgentTool("disarm", "Disarm the motors (only when landed).", no_params, RiskTier.MEDIUM, disarm),
-        AgentTool("takeoff", "Take off to an altitude in metres above launch (default 10).",
-                  {"type": "object",
-                   "properties": {"altitude_m": {"type": "number", "minimum": 1, "maximum": 120}}},
-                  RiskTier.HIGH, takeoff),
-        AgentTool("land", "Land at the current position and disarm.", no_params, RiskTier.HIGH, land),
-        AgentTool("rtl", "Return to launch and land.", no_params, RiskTier.HIGH, rtl),
-        AgentTool("wait", "Wait (hover) for a number of seconds.",
-                  {"type": "object",
-                   "properties": {"seconds": {"type": "number", "minimum": 0, "maximum": 120}},
-                   "required": ["seconds"]}, RiskTier.LOW, wait),
-        AgentTool("move", "Move a distance in metres in a direction (north/south/east/west or "
-                          "forward/backward/left/right). Requires GUIDED mode while flying.",
-                  {"type": "object",
-                   "properties": {
-                       "direction": {"type": "string",
-                                     "enum": ["north", "south", "east", "west",
-                                              "forward", "backward", "left", "right"]},
-                       "distance_m": {"type": "number", "minimum": 1, "maximum": 500}},
-                   "required": ["direction", "distance_m"]}, RiskTier.HIGH, move),
-        AgentTool("goto", "Fly to a GPS latitude/longitude (optional altitude in metres).",
-                  {"type": "object",
-                   "properties": {
-                       "latitude": {"type": "number"}, "longitude": {"type": "number"},
-                       "altitude_m": {"type": "number"}},
-                   "required": ["latitude", "longitude"]}, RiskTier.HIGH, goto),
-        AgentTool("orbit", "Fly one full circle of a given radius (metres) around the current "
-                           "position, holding altitude. Must be airborne.",
-                  {"type": "object",
-                   "properties": {
-                       "radius_m": {"type": "number", "minimum": 1, "maximum": 100},
-                       "clockwise": {"type": "boolean"}},
-                   "required": ["radius_m"]}, RiskTier.HIGH, orbit),
-    ]
+    return {
+        "get_status": get_status, "check_armable": check_armable, "set_mode": set_mode,
+        "arm": arm, "disarm": disarm, "takeoff": takeoff, "land": land, "rtl": rtl,
+        "wait": wait, "move": move, "goto": goto, "orbit": orbit,
+    }

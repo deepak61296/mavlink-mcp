@@ -8,8 +8,6 @@ from ..interfaces import (
     Capability,
     CommandResult,
     Primitive,
-    PrimitiveSpec,
-    RiskTier,
     RobotBackend,
     Telemetry,
 )
@@ -156,19 +154,4 @@ class FakeBackend(RobotBackend):
         return CommandResult.success("emergency RTL")
 
     def capabilities(self) -> Capability:
-        return Capability(
-            modes=list(_MODES),
-            primitives=[
-                PrimitiveSpec(
-                    "takeoff", "Take off to a target altitude above the launch point",
-                    {"type": "object",
-                     "properties": {"altitude_m": {"type": "number", "minimum": 1, "maximum": 120}},
-                     "required": ["altitude_m"]},
-                    RiskTier.HIGH,
-                ),
-                PrimitiveSpec("land", "Land at the current position",
-                              {"type": "object", "properties": {}}, RiskTier.HIGH),
-                PrimitiveSpec("rtl", "Return to launch and land",
-                              {"type": "object", "properties": {}}, RiskTier.HIGH),
-            ],
-        )
+        return Capability(modes=list(_MODES))

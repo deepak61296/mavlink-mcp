@@ -2,23 +2,13 @@
 
 The agent core only ever talks to a RobotBackend, so the LLM loop, safety gate and tool
 registry stay independent of MAVLink details. Vehicle actions (takeoff, goto, ...) are NOT
-methods here; they flow through execute_primitive() and are advertised by capabilities(),
-which keeps this interface to ~8 methods.
+methods here; they flow through execute_primitive(), which keeps this interface small.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field, replace
-from enum import Enum
 from typing import Any, Optional
-
-
-class RiskTier(str, Enum):
-    """How dangerous an action is. Drives the safety confirm gate in the core."""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
 
 
 @dataclass
@@ -75,19 +65,9 @@ class Primitive:
 
 
 @dataclass
-class PrimitiveSpec:
-    """Describes one primitive so the core can build the LLM tool catalog + risk table."""
-    name: str
-    description: str
-    params_schema: dict                    # JSON schema for the LLM tool parameters
-    risk: RiskTier = RiskTier.MEDIUM
-
-
-@dataclass
 class Capability:
     """What a backend can do. The core reads this at connect time, never hardcodes it."""
     modes: list[str] = field(default_factory=list)
-    primitives: list[PrimitiveSpec] = field(default_factory=list)
 
 
 class RobotBackend(ABC):
@@ -129,7 +109,7 @@ class RobotBackend(ABC):
 
     @abstractmethod
     def capabilities(self) -> Capability:
-        """List supported modes and primitives with their param schema and risk tier."""
+        """The flight modes this vehicle accepts, read at connect time rather than hardcoded."""
 
     def arming_status(self) -> CommandResult:
         """Whether the robot is ready to be enabled/armed, with a human reason if not.
