@@ -42,9 +42,21 @@ args = ["--enable-actuation", "--camera", "gazebo"]
 default_tools_approval_mode = "auto"
 ```
 
+[pi](https://github.com/badlogic/pi-mono) ships no MCP client of its own, so there is a
+bridge extension in this repo:
+
+```bash
+MAVLINK_MCP_ARGS="--enable-actuation" pi -a -e integrations/pi/mavlink-mcp.ts
+```
+
 Every tool is annotated, so a client can tell the difference between reading telemetry and
 moving an aircraft: the read-only tools declare `readOnlyHint` and get auto-approved, the
 flight tools declare `destructiveHint` and prompt.
+
+Argument limits travel in the tool schema, so a client rejects an impossible request before
+it reaches an aircraft — `takeoff(altitude_m=-20)` comes back as a validation error, not as
+a clamped flight. The bounds come from your config, so the model sees the envelope it is
+actually flying in.
 
 Then ask it something like *"take off to 20 m, fly 40 m north, orbit here at 15 m, take a photo, then RTL."*
 
@@ -156,6 +168,29 @@ ArduPilot works today. PX4 is recognised and the read-only tools work on it, but
 refused until the PX4 backend (MAVSDK) is done — see [STATUS.md](STATUS.md).
 
 `scripts/mission_demo.py` is a small example that drives the server over MCP and flies a mission.
+
+## Tests
+
+```bash
+pytest                      # unit tests, no vehicle needed
+pytest -m sitl              # flies a real mission against SITL (~5 min)
+```
+
+The `sitl` suite is opt-in because it needs ArduCopter SITL listening on
+`MAVLINK_MCP_TEST_CONN` (default `tcp:127.0.0.1:5760`). It drives the server over the real
+stdio protocol and flies a full mission, which is the only way most of the interesting
+failures show up at all.
+
+Start SITL for it with no MAVProxy, so the server owns the link:
+
+```bash
+python3 Tools/autotest/sim_vehicle.py -v ArduCopter --no-mavproxy -I0
+```
+
+That matters more than it looks: **ArduPilot SITL serves exactly one MAVLink client on its
+TCP port.** A second connection is accepted at the socket level and then never receives a
+heartbeat, so a stray MAVProxy or a second server makes the vehicle look dead rather than
+busy.
 
 ## License
 
