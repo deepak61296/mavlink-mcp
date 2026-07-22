@@ -92,12 +92,17 @@ class VehicleSession:
 
     # ------------------------------------------------------------------ guards
     def ensure_connected(self) -> Optional[str]:
-        """Connect on first use. Returns an error string, or None when connected."""
+        """Connect on first use. Returns an error string, or None when the link is usable.
+
+        A link that opened once and has since gone quiet is reported as an error rather than
+        silently reused: the backend keeps trying to reconnect underneath, so this starts
+        returning None again on its own once the vehicle comes back.
+        """
         if self.backend.is_connected:
-            return None
+            return self.backend.link_error()
         with self._connect_lock:
             if self.backend.is_connected:
-                return None
+                return self.backend.link_error()
             res = self.backend.connect(self.settings.conn, timeout_s=self.settings.connect_timeout_s)
             if not res.ok:
                 self._connect_error = res.message

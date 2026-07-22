@@ -139,6 +139,15 @@ class RobotBackend(ABC):
         """
         return CommandResult.success("ready")
 
+    def link_error(self) -> Optional[str]:
+        """Why the vehicle cannot be commanded right now, or None when the link is healthy.
+
+        Separate from is_connected: a link can be open but silent, and telemetry that stopped
+        arriving must not be served as if it were current. Backends over a real transport
+        override this; in-memory backends have no link to lose.
+        """
+        return None if self.is_connected else "not connected"
+
     def point_gimbal(self, pitch_deg: float, yaw_deg: float = 0.0) -> CommandResult:
         """Point the camera gimbal (degrees; pitch -90 = straight down, 0 = forward).
 

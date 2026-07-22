@@ -38,6 +38,11 @@ def to_ollama_tools(tools: list[AgentTool]) -> list[dict]:
 
 def format_telemetry(t: Telemetry) -> str:
     if not t.connected:
+        # Never fall through to printing the last values we happened to see: an agent cannot
+        # tell a stale altitude from a live one, and will keep flying a vehicle it has lost.
+        if t.last_update_s > 0:
+            return (f"LINK DOWN - no telemetry for {time.time() - t.last_update_s:.0f}s. "
+                    "The readings below are unknown, not current.")
         return "NOT CONNECTED to a vehicle."
     parts = [
         f"mode={t.mode}", f"armed={t.armed}",

@@ -38,6 +38,10 @@ from ..interfaces import (  # noqa: E402
 _MODES = ["GUIDED", "LOITER", "ALT_HOLD", "AUTO", "RTL", "LAND"]
 _EKF_POS_HORIZ_ABS = 1 << 4  # EKF_STATUS_REPORT flag: absolute horizontal position ok
 
+# Seconds of silence before the link counts as down. Matches MAVProxy's 'timeout' default;
+# telemetry streams at several Hz, so 5 s of nothing is already well past a dropped packet.
+LINK_TIMEOUT_S = 5.0
+
 
 @dataclass
 class _Fence:
@@ -59,7 +63,9 @@ def _result_name(result: int) -> str:
 class MavlinkBackend(RobotBackend):
     """RobotBackend backed by a live ArduPilot vehicle or SITL instance."""
 
-    def __init__(self) -> None:
+    def __init__(self, link_timeout_s: float = LINK_TIMEOUT_S) -> None:
+        self.link_timeout_s = link_timeout_s
+        self._link_down = False       # no traffic for link_timeout_s (socket may still be open)
         self._conn = None
         self._owner: threading.Thread | None = None
         self._stop = threading.Event()
@@ -123,23 +129,87 @@ class MavlinkBackend(RobotBackend):
 
     @property
     def is_connected(self) -> bool:
+        """We have a reader thread that has seen a heartbeat. Says nothing about freshness."""
         return self._connected.is_set()
+
+    def link_error(self) -> Optional[str]:
+        """Why the vehicle cannot be commanded right now, or None.
+
+        is_connected only means the socket was opened once. Acting on a link that has gone
+        quiet is how an agent ends up flying a vehicle it can no longer hear.
+        """
+        if not self._connected.is_set():
+            return "not connected"
+        if self._link_down:
+            with self._tel_lock:
+                age = time.time() - self._tel.last_update_s
+            return f"link down - no telemetry for {age:.0f}s"
+        return None
 
     # ------------------------------------------------------------------ owner thread
     def _run(self) -> None:
-        """The only thread that ever touches self._conn."""
-        heartbeat = self._conn.wait_heartbeat(timeout=30)
+        """The only thread that ever touches self._conn.
+
+        Nothing in here may raise: this thread is the link, and if it dies the server keeps
+        serving the last telemetry it happened to see, forever. pymavlink reconnects
+        underneath us (autoreconnect), but it does so from inside recv() and raises when the
+        far end is refusing - so every read is wrapped, the same way MAVProxy's
+        process_master() does it.
+        """
+        heartbeat = self._wait_first_heartbeat()
         if heartbeat is None:
             return  # connect() observes the timeout via self._connected
         self._autopilot = heartbeat.autopilot
         self._vehicle_type = heartbeat.type
         self._connected.set()
         while not self._stop.is_set():
-            self._drain_commands()
-            self._maybe_heartbeat()
-            msg = self._conn.recv_match(blocking=True, timeout=0.5)
-            if msg is not None:
-                self._update_telemetry(msg)
+            try:
+                self._drain_commands()
+                self._maybe_heartbeat()
+                msg = self._conn.recv_match(blocking=True, timeout=0.5)
+                if msg is not None:
+                    self._update_telemetry(msg)
+            except Exception:
+                # Link down: pymavlink is retrying the socket underneath. Back off so a
+                # refusing peer can't spin this thread - a reconnect shows up as messages
+                # simply starting to arrive again.
+                time.sleep(0.1)
+            # Outside the try on purpose: the loudest failure is the one that raises here
+            # every pass, and that is exactly when the link must be marked down.
+            self._check_link_stale()
+
+    def _wait_first_heartbeat(self):
+        """Wait for the first heartbeat in short slices so disconnect() is honoured promptly.
+
+        A single wait_heartbeat(timeout=30) would keep this thread inside pymavlink long
+        after disconnect() gave up joining it, and the socket would then be closed out from
+        under the read - which is exactly how the reader used to die on 'Bad file descriptor'.
+        """
+        deadline = time.time() + 30.0
+        while not self._stop.is_set() and time.time() < deadline:
+            try:
+                hb = self._conn.recv_match(type="HEARTBEAT", blocking=True, timeout=0.5)
+            except Exception:
+                time.sleep(0.1)
+                continue
+            if hb is not None:
+                return hb
+        return None
+
+    def _check_link_stale(self) -> None:
+        """Flag the link down after link_timeout_s of silence, and up again on any traffic.
+
+        Deliberately separate from the socket's own state: a TCP connection that is still
+        open but has stopped delivering is exactly the case that used to be reported as a
+        healthy vehicle. MAVProxy draws the same distinction (check_link_status), with the
+        same 5 s default.
+        """
+        with self._tel_lock:
+            last = self._tel.last_update_s
+            if last <= 0.0:
+                return
+            self._link_down = (time.time() - last) > self.link_timeout_s
+            self._tel.connected = not self._link_down
 
     def _maybe_heartbeat(self) -> None:
         """Send a ~3 Hz GCS heartbeat so the FC's FS_GCS failsafe RTLs if we (the GCS) go silent.
@@ -229,8 +299,9 @@ class MavlinkBackend(RobotBackend):
 
     def arming_status(self) -> CommandResult:
         """Ready to arm only once the position estimate has settled (the real prearm gate)."""
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         with self._tel_lock:
             tel = self._tel.copy()
             prearm, prearm_t, home = self._last_prearm, self._last_prearm_t, self._home_lat
@@ -340,8 +411,9 @@ class MavlinkBackend(RobotBackend):
         return self._submit(lambda: self._do_get_param(name)).result(timeout=8)
 
     def set_param(self, name: str, value: float) -> CommandResult:
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         return self._submit(lambda: self._do_set_param(name, value)).result(timeout=8)
 
     def _run_cmd(self, command: int, *params: float, timeout: float = 5.0) -> CommandResult:
@@ -452,13 +524,15 @@ class MavlinkBackend(RobotBackend):
 
     # ------------------------------------------------------------------ public API
     def set_mode(self, mode: str) -> CommandResult:
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         return self._submit(lambda: self._do_set_mode(mode)).result(timeout=8)
 
     def enable(self, on: bool) -> CommandResult:
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         return self._submit(lambda: self._do_enable(on)).result(timeout=8)
 
     def mount_pitch_deg(self) -> Optional[float]:
@@ -486,13 +560,15 @@ class MavlinkBackend(RobotBackend):
         return None
 
     def point_gimbal(self, pitch_deg: float, yaw_deg: float = 0.0) -> CommandResult:
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         return self._submit(lambda: self._do_point_gimbal(pitch_deg, yaw_deg)).result(timeout=8)
 
     def execute_primitive(self, primitive: Primitive) -> CommandResult:
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         name = primitive.name
         if name == "takeoff":
             altitude_m = float(primitive.params.get("altitude_m", 0.0))
@@ -513,8 +589,9 @@ class MavlinkBackend(RobotBackend):
     def emergency_stop(self) -> CommandResult:
         # Minimal: RTL via the same queue. A later phase gives this a priority lane so it
         # pre-empts an in-flight command instead of waiting behind it.
-        if not self.is_connected:
-            return CommandResult.failure("not connected")
+        err = self.link_error()
+        if err:
+            return CommandResult.failure(err)
         return self.set_mode("RTL")
 
     def capabilities(self) -> Capability:
