@@ -10,20 +10,22 @@ Design rules:
     result ends with a [state: ...] line taken from live telemetry, so the client model
     reports what actually happened, not what was requested.
 """
-from __future__ import annotations
-
+# NOTE: no `from __future__ import annotations` here on purpose. FastMCP resolves tool
+# annotations with get_type_hints against the module globals, so PEP 563 string
+# annotations cannot see the per-server bound types built inside build_server().
 import argparse
 import functools
 import inspect
 import threading
 import time
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
 import anyio.to_thread
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
-from . import __version__, camera as cam
+from . import __version__, camera as cam, geo
 from .backends import (
     AUTOPILOT_PX4,
     autopilot_name,
@@ -35,7 +37,7 @@ from .backends import (
 from .config import Settings, load_settings
 from .flight import AgentTool, build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
-from .safety import param_block
+from .safety import param_block, reject
 
 
 # Tool annotations tell the client what a tool does before it calls it. Clients use these to
@@ -227,6 +229,11 @@ class VehicleSession:
         block = self.actuation_block()
         if block:
             return f"blocked: {block}"
+        bad = reject(params)
+        if bad:
+            # Refused before anything moves. A nonsense argument is not a smaller version of
+            # a valid one, and clamping it into a real flight hides the mistake from the model.
+            return f"failed: {bad}\n{self.state_line()}"
         if not self._act_lock.acquire(blocking=False):
             return "blocked: another flight command is still running - wait for it to finish."
         try:
@@ -255,6 +262,21 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
             backend = MavlinkBackend(link_timeout_s=settings.link_timeout_s)
     session = VehicleSession(settings, backend)
     mcp = FastMCP("mavlink-mcp")
+
+    # Parameter bounds go into the tool schema, so a client can reject an out-of-range call
+    # before it reaches an aircraft, and the model can see the envelope it is flying in
+    # rather than discovering it from an error string. They come from the config, because
+    # the operator's limits ARE the envelope; the vehicle's own fence is tighter still and
+    # applied at command time, since it is not known until the link is up.
+    lim = settings.limits
+    Altitude = Annotated[float, Field(gt=0, le=lim.max_takeoff_alt_m,
+                                      description="metres above the launch point")]
+    Distance = Annotated[float, Field(gt=0, le=lim.max_move_m, description="metres")]
+    Radius = Annotated[float, Field(gt=0, le=lim.max_orbit_radius_m, description="metres")]
+    Latitude = Annotated[float, Field(ge=-90, le=90)]
+    Longitude = Annotated[float, Field(ge=-180, le=180)]
+    Direction = Literal[tuple(geo.direction_names())]           # type: ignore[valid-type]
+    Mode = Literal[tuple(backend.capabilities().modes)]         # type: ignore[valid-type]
 
     # ------------------------------------------------------------------ read-only tools
     @mcp.tool(annotations=_READ_ONLY)
@@ -357,7 +379,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def takeoff(altitude_m: float = 10.0) -> str:
+    async def takeoff(altitude_m: Altitude = 10.0) -> str:
         """Arm if needed and take off, blocking until the target altitude is reached.
         The altitude is clamped to the safety limit and the vehicle's altitude fence."""
         return await off_loop(session.run_flight_tool, "takeoff", {"altitude_m": altitude_m})
@@ -376,7 +398,8 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def goto(latitude: float, longitude: float, altitude_m: Optional[float] = None) -> str:
+    async def goto(latitude: Latitude, longitude: Longitude,
+                   altitude_m: Optional[Altitude] = None) -> str:
         """Fly to a GPS position and block until arrival. Targets outside the geofence are
         pulled back inside it."""
         return await off_loop(session.run_flight_tool, "goto",
@@ -385,7 +408,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def move(direction: str, distance_m: float) -> str:
+    async def move(direction: Direction, distance_m: Distance) -> str:
         """Move a distance in metres. Direction is one of: north, south, east, west,
         northeast, northwest, southeast, southwest (absolute), or forward, backward,
         left, right (relative to heading). Blocks until arrival."""
@@ -394,7 +417,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def orbit(radius_m: float, clockwise: bool = True) -> str:
+    async def orbit(radius_m: Radius, clockwise: bool = True) -> str:
         """Fly one full circle around the current position, holding altitude. radius_m is
         required (1-100 m). Must already be airborne. Blocks until the circle is complete."""
         return await off_loop(session.run_flight_tool, "orbit",
@@ -402,7 +425,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
-    async def set_mode(mode: str) -> str:
+    async def set_mode(mode: Mode) -> str:
         """Switch flight mode (GUIDED, LOITER, ALT_HOLD, AUTO, RTL, LAND)."""
         return await off_loop(session.run_flight_tool, "set_mode", {"mode": mode})
 

@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 from . import geo
 from .interfaces import CommandResult, Primitive, RiskTier, RobotBackend, Telemetry
-from .safety import SafetyLimits, clamp
+from .safety import SafetyLimits, clamp, clamp_noted
 
 ARRIVE_RADIUS_M = 2.5
 
@@ -126,10 +126,12 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             return CommandResult.failure(
                 f"already airborne at {tel.alt_rel_m:.1f} m - use goto/move to change position")
         ceiling = lim.max_takeoff_alt_m
+        why = "the configured max_takeoff_alt_m"
         fence_cap = backend.fence_ceiling_m()  # above the alt fence the FC refuses the takeoff
-        if fence_cap is not None:
-            ceiling = min(ceiling, fence_cap)
-        alt = clamp(float(p.get("altitude_m", 10.0)), lim.min_takeoff_alt_m, ceiling)
+        if fence_cap is not None and fence_cap < ceiling:
+            ceiling, why = fence_cap, "the vehicle's altitude fence"
+        alt, note = clamp_noted(float(p.get("altitude_m", 10.0)),
+                                lim.min_takeoff_alt_m, ceiling, "altitude", why)
         if not backend.get_telemetry().armed:  # arm first (waits for armable, reports if it can't)
             ares = arm({})
             if not ares.ok:
@@ -161,7 +163,7 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             if interrupt is not None and interrupt.is_set():
                 return CommandResult.failure("interrupted")
             return CommandResult.failure(f"did not reach {alt:.0f} m")
-        return CommandResult.success(f"reached {reached.alt_rel_m:.1f} m")
+        return CommandResult.success(f"reached {reached.alt_rel_m:.1f} m{note}")
 
     def land(_: dict) -> CommandResult:
         res = backend.execute_primitive(Primitive("land"))
@@ -221,12 +223,16 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         }))
 
     def move(p: dict) -> CommandResult:
-        dist = clamp(float(p["distance_m"]), 0.0, lim.max_move_m)
-        return _goto_and_wait(f"{p['direction']} {dist:.0f}m",
-                              Primitive("move", {"direction": str(p["direction"]), "distance_m": dist}))
+        dist, note = clamp_noted(float(p["distance_m"]), 0.0, lim.max_move_m,
+                                 "distance", "the configured max_move_m")
+        res = _goto_and_wait(f"{p['direction']} {dist:.0f}m",
+                             Primitive("move", {"direction": str(p["direction"]), "distance_m": dist}))
+        return CommandResult(res.ok, res.message + note, res.detail) if note else res
 
     def orbit(p: dict) -> CommandResult:
-        radius = clamp(float(p["radius_m"]), lim.min_orbit_radius_m, lim.max_orbit_radius_m)
+        radius, note = clamp_noted(float(p["radius_m"]), lim.min_orbit_radius_m,
+                                   lim.max_orbit_radius_m, "radius",
+                                   "the configured max_orbit_radius_m")
         cw = bool(p.get("clockwise", True))
         tel = backend.get_telemetry()
         if (tel.alt_rel_m or 0) <= 1.0:
@@ -246,7 +252,7 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             if not res.ok:
                 return CommandResult.failure(f"orbit stopped at point {i}: {res.message}")
         turn = "clockwise" if cw else "counter-clockwise"
-        return CommandResult.success(f"flew a {radius:.0f} m circle ({turn})")
+        return CommandResult.success(f"flew a {radius:.0f} m circle ({turn}){note}")
 
     no_params = {"type": "object", "properties": {}}
     return [
