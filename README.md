@@ -21,6 +21,11 @@ refused until the backend lands. And a PyPI release. See
 
 ## Install
 
+Needs **Python 3.10+**. To actually fly you also need **ArduPilot SITL** built (ArduPilot's
+[SITL on Linux](https://ardupilot.org/dev/docs/setting-up-sitl-on-linux.html) guide); the optional
+Gazebo camera needs Gazebo Harmonic + the [world](#with-a-camera-in-gazebo). The server itself
+starts without either — the link opens lazily on the first tool call.
+
 Not on PyPI yet — install from source. This puts the `mavlink-mcp` command on your PATH, which is
 what the MCP client configs below call:
 
@@ -42,7 +47,16 @@ cd ~/ardupilot
 python3 Tools/autotest/sim_vehicle.py -v ArduCopter --no-mavproxy -I0
 ```
 
-Wire it into your MCP client. Claude Desktop / Claude Code:
+Wire it into your MCP client. **Claude Code** — add it with one command:
+
+```bash
+claude mcp add --transport stdio drone -- mavlink-mcp --enable-actuation
+claude mcp list          # check it's registered;  /mcp inside Claude Code shows it connected
+```
+
+`--` is required — it stops Claude parsing `--enable-actuation` as its own flag. Default scope is
+local (this project only); `--scope project` writes a shared `.mcp.json` instead. Or configure it by
+hand — `.mcp.json` in the project root (Claude Desktop uses the same shape):
 
 ```json
 {
