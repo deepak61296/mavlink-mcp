@@ -6,6 +6,9 @@ try it with no hardware.
 
 Drones are dangerous — flight tools are **off by default**. Read [Safety](#safety) first.
 
+New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks a fresh machine through install →
+Claude Code / Codex → flying SITL.
+
 ## Status
 
 **Stable** — covered by the unit suite and flown by `pytest -m sitl` against ArduPilot SITL:
