@@ -131,10 +131,11 @@ class RobotBackend(ABC):
     def point_gimbal(self, pitch_deg: float, yaw_deg: float = 0.0) -> CommandResult:
         """Point the camera gimbal (degrees; pitch -90 = straight down, 0 = forward).
 
-        Default is a no-op for vehicles without a gimbal; backends with a mount (e.g. ArduPilot
-        over MAVLink) override this so precision landing and perception can look down.
+        Default fails honestly for vehicles without a gimbal (the camera did NOT move, so don't
+        report success); backends with a mount (e.g. ArduPilot over MAVLink) override this so
+        precision landing and perception can look down.
         """
-        return CommandResult.success("no gimbal")
+        return CommandResult.failure("no gimbal on this vehicle")
 
     def mount_pitch_deg(self) -> Optional[float]:
         """The gimbal's ACTUAL pitch as reported by the vehicle, or None if unknown.
