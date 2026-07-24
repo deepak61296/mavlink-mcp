@@ -6,11 +6,32 @@ try it with no hardware.
 
 Drones are dangerous — flight tools are **off by default**. Read [Safety](#safety) first.
 
+## Status
+
+**Stable** — covered by the unit suite and flown by `pytest -m sitl` against ArduPilot SITL:
+the read-only tools, `arm`/`disarm`/`takeoff`/`land`/`rtl`/`goto`/`move`/`orbit`, `set_param` with
+the safety guards, the geofence + GCS-heartbeat failsafe, and `capture_camera`.
+
+**Working, less battle-tested** — the HTTP transport, `--camera` over `rtsp://`/`udp://`, the pi
+bridge. Not yet flown on real hardware.
+
+**Planned** — a PX4 backend (MAVSDK): PX4 is detected from its heartbeat today, but flight is
+refused until the backend lands. And a PyPI release. See
+[STATUS.md](https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md).
+
 ## Install
 
+Not on PyPI yet — install from source. This puts the `mavlink-mcp` command on your PATH, which is
+what the MCP client configs below call:
+
 ```bash
-pip install mavlink-mcp            # add [camera] for the camera tool: pip install "mavlink-mcp[camera]"
+git clone git@github.com:deepak61296/mavlink-mcp.git
+cd mavlink-mcp
+pip install -e .                  # add ".[camera]" for the Gazebo/RTSP camera tool
 ```
+
+If `mavlink-mcp` isn't on your client's PATH (e.g. it lives in a venv), give the configs the
+absolute path to it instead of the bare command name.
 
 ## Try it against SITL
 
@@ -81,6 +102,21 @@ mavlink-mcp --enable-actuation --camera gazebo
 Ask the agent to take off, point the camera down, fly north and take a photo, and it gets
 back a picture of the field.
 
+## Running alongside a GCS
+
+The server owns the link. ArduPilot SITL — and a typical serial flight controller — serve a
+**single** MAVLink client, so you can't point `mavlink-mcp` and a ground station at the same
+endpoint; the second one connects but never sees a heartbeat. To run both, fan the stream out with
+[mavlink-router](https://github.com/mavlink-router/mavlink-router) (or mavproxy) and give each
+consumer its own routed UDP port:
+
+```bash
+# one FC in, two UDP endpoints out
+mavlink-routerd -e 127.0.0.1:14550 -e 127.0.0.1:14560 /dev/ttyACM0:57600
+```
+
+Then `mavlink-mcp --conn udp:127.0.0.1:14560` while your GCS takes `14550`.
+
 ## Tools
 
 Read-only (always on): `get_status`, `describe_vehicle`, `check_armable`, `get_param`,
@@ -107,6 +143,8 @@ Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `
 - `capture_camera` returns the frame as an MCP image, so a multimodal model can look at it. Point
   `--camera` at `gazebo`, an `rtsp://` URL, or `file:<path>`. `file:` is handy for a first
   test: point it at any JPEG and check your client actually renders what the drone "sees".
+  Every other tool returns text, so the flight and telemetry tools work with any model — only
+  `capture_camera` needs a multimodal client (Claude, Codex).
 
 Note on `--camera gazebo`: that stream is H.264 over UDP, which OpenCV can only read
 through GStreamer, and the `opencv-python` wheel is built without it. Use Ubuntu's
