@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from mavlink_mcp.backends.fake import FakeBackend
-from mavlink_mcp.server import Settings, VehicleSession, build_server, is_local_sim_uri
+from mavlink_mcp.server import Settings, VehicleSession, build_server
 
 
 def _session(**kw) -> VehicleSession:
@@ -12,29 +12,33 @@ def _session(**kw) -> VehicleSession:
     return VehicleSession(settings, FakeBackend())
 
 
-def test_local_sim_uri_detection():
-    assert is_local_sim_uri("tcp:127.0.0.1:5760")
-    assert is_local_sim_uri("udp:localhost:14550")
-    assert is_local_sim_uri("udpin:127.0.0.1:14550")
-    assert is_local_sim_uri("tcp:127.0.0.2:5760")          # all of 127/8 is loopback
-    assert not is_local_sim_uri("tcp:192.168.1.50:5760")
-    assert not is_local_sim_uri("/dev/ttyACM0")
-    assert not is_local_sim_uri("serial:/dev/ttyUSB0:57600")
+class RealVehicleBackend(FakeBackend):
+    """A vehicle that never sent SIMSTATE - i.e. anything that is not SITL."""
+    is_simulator = False
 
 
-def test_binding_every_interface_is_not_a_simulator():
-    """udpin:0.0.0.0 is how a real vehicle's radio reaches a GCS, not a SITL-only endpoint."""
-    assert not is_local_sim_uri("udpin:0.0.0.0:14550")
-    assert not is_local_sim_uri("udp::14550")
-    assert not is_local_sim_uri("tcpin:0.0.0.0:5760")
+def _real_session(**kw) -> VehicleSession:
+    return VehicleSession(Settings(backend="fake", **kw), RealVehicleBackend())
 
 
-def test_actuation_on_a_wide_open_bind_needs_the_real_vehicle_flag():
-    blocked = _session(enable_actuation=True, conn="udpin:0.0.0.0:14550").actuation_block()
-    assert blocked and "real-vehicle" in blocked
-    allowed = _session(enable_actuation=True, allow_real_vehicle=True,
-                       conn="udpin:0.0.0.0:14550").actuation_block()
-    assert allowed is None
+def test_simulator_status_comes_from_the_vehicle_not_the_uri():
+    # Loopback used to imply "simulator", but mavlink-router puts a real FC on 127.0.0.1
+    # too. Only the vehicle's own SIMSTATE stream counts now - so a non-SITL vehicle is
+    # blocked even on the most local-looking connection there is.
+    s = _real_session(enable_actuation=True, conn="tcp:127.0.0.1:5760")
+    blocked = s.actuation_block()
+    assert blocked and "--allow-real-vehicle" in blocked and "SIMSTATE" in blocked
+
+
+def test_real_vehicle_flag_allows_actuation():
+    s = _real_session(enable_actuation=True, allow_real_vehicle=True, conn="tcp:127.0.0.1:5760")
+    assert s.actuation_block() is None
+
+
+def test_simulator_is_allowed_even_on_a_wide_open_bind():
+    # The URI tells us nothing either way; a vehicle that streams SIMSTATE is SITL.
+    s = _session(enable_actuation=True, conn="udpin:0.0.0.0:14550")
+    assert s.actuation_block() is None
 
 
 def test_actuation_disabled_by_default():
@@ -42,16 +46,21 @@ def test_actuation_disabled_by_default():
     assert "actuation is disabled" in s.actuation_block()
 
 
-def test_actuation_allowed_on_local_sim_when_enabled():
-    s = _session(enable_actuation=True)
-    assert s.actuation_block() is None
+def test_flight_refused_on_a_non_copter_vehicle():
+    class PlaneBackend(FakeBackend):
+        vehicle_type_id = 1     # MAV_TYPE_FIXED_WING
+
+    s = VehicleSession(Settings(backend="fake", enable_actuation=True), PlaneBackend())
+    blocked = s.actuation_block()
+    assert blocked and "multirotor" in blocked
 
 
-def test_actuation_blocked_on_remote_without_flag():
-    s = _session(enable_actuation=True, conn="tcp:10.0.0.9:5760")
-    assert "real-vehicle" in s.actuation_block()
-    s2 = _session(enable_actuation=True, allow_real_vehicle=True, conn="tcp:10.0.0.9:5760")
-    assert s2.actuation_block() is None
+def test_emergency_stop_respects_the_real_vehicle_gate():
+    # Without the flag no flight tool can be running, so there is nothing to abort - and an
+    # ungated RTL would yank a vehicle away from whoever IS flying it.
+    s = _real_session(enable_actuation=True)
+    out = s.abort()
+    assert out.startswith("blocked:")
 
 
 def test_run_flight_tool_blocked_message_when_disabled():
@@ -165,13 +174,19 @@ def test_abort_interrupts_and_returns_to_launch():
     assert not s._interrupt.is_set()  # cleared so later commands still run
 
 
-def test_safety_params_cannot_be_switched_off():
+def test_safety_net_params_are_refused_wholesale():
     from mavlink_mcp.safety import param_block
-    assert "geofence" in param_block("FENCE_ENABLE", 0)
-    assert "lifeline" in param_block("FS_GCS_ENABLE", 0)
-    assert "prearm" in param_block("ARMING_CHECK", 0)
-    assert param_block("FENCE_ENABLE", 1) is None      # turning one ON is always fine
-    assert param_block("WP_SPD", 0) is None            # ordinary tuning is not guarded
+    assert param_block("FENCE_ENABLE", 0)          # the classic off switch
+    assert param_block("FENCE_TYPE", 0)            # zero disables every fence type
+    assert param_block("ARMING_CHECK", 2)          # bitmask: 2 passes a ">0" test, kills checks
+    assert param_block("FENCE_RADIUS", 999999)     # weakening by raising
+    assert param_block("FS_GCS_TIMEOUT", 3600)     # nullifies the lifeline, "enabled" reads 1
+    assert param_block("FORMAT_VERSION", 0)        # wipes the parameter store on reboot
+    assert param_block("BATT_LOW_VOLT", 1)         # battery floor low enough to never fire
+    # Even "strengthening" is refused: envelope changes are the operator's call, not the model's.
+    assert param_block("FENCE_ENABLE", 1)
+    assert param_block("WP_SPD", 0) is None        # ordinary tuning is not guarded
+    assert param_block("LOIT_SPEED_MS", 8) is None
     assert param_block("FENCE_ENABLE", 0, allow_unsafe=True) is None
 
 
@@ -181,6 +196,51 @@ def test_rtl_blocks_until_landed_and_disarmed():
     out = s.run_flight_tool("rtl", {})
     assert "landed and disarmed" in out
     assert "[state: alt 0.0 m, RTL, disarmed]" in out
+
+
+def test_move_and_goto_refused_before_takeoff():
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("move", {"direction": "north", "distance_m": 10})
+    assert out.startswith("failed:") and "take off" in out
+    out = s.run_flight_tool("goto", {"latitude": -35.36, "longitude": 149.16})
+    assert out.startswith("failed:") and "take off" in out
+
+
+def test_disarm_fails_closed_when_altitude_unknown():
+    s = _session(enable_actuation=True)
+    s.ensure_connected()
+    s.backend._tel.alt_rel_m = None     # heartbeats fine, position stream dead
+    out = s.run_flight_tool("disarm", {})
+    assert out.startswith("failed:") and "altitude unknown" in out
+
+
+def test_abort_cancels_a_running_flight_command():
+    import threading
+    import time as _time
+
+    from mavlink_mcp.interfaces import CommandResult
+
+    class SlowRTLBackend(FakeBackend):
+        def execute_primitive(self, primitive):
+            if primitive.name == "rtl":
+                self._tel.mode = "RTL"      # stays armed and airborne: only abort can unwind it
+                return CommandResult.success("returning to launch")
+            return super().execute_primitive(primitive)
+
+    s = VehicleSession(Settings(backend="fake", enable_actuation=True), SlowRTLBackend())
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    result = {}
+    t = threading.Thread(target=lambda: result.setdefault("out", s.run_flight_tool("rtl", {})))
+    t.start()
+    _time.sleep(0.3)                        # let rtl enter its telemetry poll loop
+    out = s.abort()
+    t.join(timeout=5)
+    assert not t.is_alive()                 # the blocking rtl actually unwound
+    assert "interrupted" in result["out"]
+    assert "RTL" in out
+    assert not s._interrupt.is_set()        # cleared so the next command runs clean
+    assert s._act_lock.acquire(blocking=False)   # and the lock was released
+    s._act_lock.release()
 
 
 def test_readonly_server_hides_flight_tools():

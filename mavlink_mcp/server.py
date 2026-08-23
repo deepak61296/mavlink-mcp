@@ -94,25 +94,19 @@ async def off_loop(fn, *args):
     return await anyio.to_thread.run_sync(fn, *args)
 
 
-def is_local_sim_uri(uri: str) -> bool:
-    """True only when the link cannot reach anything except this machine.
-
-    The bar is loopback, not "looks like a laptop". 0.0.0.0 and an empty host mean *bind
-    every interface*, which is exactly how a real vehicle's telemetry radio or companion
-    computer reaches a ground station - so `udpin:0.0.0.0:14550` must not count as a
-    simulator, however often it is typed while testing. Serial devices and remote hosts
-    were already excluded; these two were the hole.
-    """
-    parts = uri.split(":")
-    if parts[0] not in ("tcp", "tcpin", "udp", "udpin", "udpout") or len(parts) < 2:
-        return False
-    host = parts[1].strip()
-    if host == "localhost":
-        return True
+def _is_loopback_host(host: str) -> bool:
+    """For the HTTP transport guard: is this bind address loopback-only?"""
+    if host in ("localhost", ""):
+        return host == "localhost"
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+# MAV_TYPE values these copter verbs are written for. A Plane heartbeat getting NAV_TAKEOFF
+# and GUIDED-waypoint orbits would "work" just well enough to be dangerous.
+_COPTER_TYPES = {2, 3, 4, 13, 14, 15}   # quad, coax, heli, hexa, octo, tricopter
 
 
 class VehicleSession:
@@ -162,17 +156,32 @@ class VehicleSession:
         return None
 
     def actuation_block(self) -> Optional[str]:
-        """Reason actuation is not allowed right now, or None."""
+        """Reason actuation is not allowed right now, or None.
+
+        The simulator question is answered by the VEHICLE, not the connection string: SITL
+        streams SIMSTATE, real firmware never does. A loopback URI proves nothing - the
+        standard mavlink-router topology puts a real flight controller on 127.0.0.1 too.
+        """
         if not self.settings.enable_actuation:
             return ("actuation is disabled. Restart the server with --enable-actuation "
                     "to allow flight commands.")
-        if not self.settings.allow_real_vehicle and not is_local_sim_uri(self.settings.conn):
-            return (f"connection '{self.settings.conn}' does not look like a local simulator. "
-                    "Flying a real vehicle requires --allow-real-vehicle.")
+        if not self.settings.allow_real_vehicle:
+            sim = getattr(self.backend, "is_simulator", False)
+            if not sim:
+                waiter = getattr(self.backend, "wait_simulator", None)
+                sim = waiter(2.0) if waiter else False
+            if not sim:
+                return (f"the vehicle on '{self.settings.conn}' has not identified itself as a "
+                        "simulator (no SIMSTATE message), so it is treated as a real aircraft. "
+                        "Flying it requires --allow-real-vehicle.")
         ap = getattr(self.backend, "autopilot_id", None)
         if ap == AUTOPILOT_PX4:
             return ("this vehicle runs PX4; the PX4 backend (via MAVSDK) is not implemented "
                     "yet, so flight commands would misbehave. Telemetry tools still work.")
+        vt = getattr(self.backend, "vehicle_type_id", None)
+        if vt is not None and vt not in _COPTER_TYPES:
+            return (f"this vehicle is a {vehicle_type_name(vt)}, not a multirotor - these "
+                    "copter flight tools would misbehave on it. Telemetry tools still work.")
         return None
 
     def state_line(self) -> str:
@@ -211,11 +220,19 @@ class VehicleSession:
         ceiling = b.fence_ceiling_m()
         if ceiling is not None:
             lines.append(f"fence altitude ceiling: {ceiling:.0f} m")
+        clamp_status = getattr(b, "fence_clamp_status", None)
+        if clamp_status:
+            lines.append(f"geofence clamp: {clamp_status()}")
         if version and version.get("capabilities"):
             lines.append("protocol capabilities: " + ", ".join(capability_names(version["capabilities"])))
         lines.append(f"connection: {self.settings.conn}")
         lines.append("actuation: " + ("enabled" if self.settings.enable_actuation
                                       else "disabled (read-only tools only)"))
+        configured = getattr(b, "configured_params", None)
+        if configured:
+            lines.append("written to the FC at connect: " + ", ".join(configured))
+        elif self.settings.enable_actuation:
+            lines.append("written to the FC at connect: nothing yet")
         return "\n".join(lines)
 
     def abort(self) -> str:
@@ -229,6 +246,12 @@ class VehicleSession:
         err = self.ensure_connected()
         if err:
             return f"error: {err}"
+        # Same gate as every other flight tool. If the gates are closed, no flight tool can
+        # be running here to cancel - and an ungated RTL on a vehicle someone ELSE is flying
+        # (real FC over the router, no --allow-real-vehicle) yanks it away from its pilot.
+        block = self.actuation_block()
+        if block:
+            return f"blocked: {block}"
         self._interrupt.set()
         try:
             res = self.backend.emergency_stop()
@@ -277,7 +300,8 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
             # says what is really there. Once the PX4/MAVSDK backend exists, "auto" will hand
             # a PX4 heartbeat over to it instead of refusing flight.
             from .backends.ardupilot import MavlinkBackend
-            backend = MavlinkBackend(link_timeout_s=settings.link_timeout_s)
+            backend = MavlinkBackend(link_timeout_s=settings.link_timeout_s,
+                                     configure_vehicle=settings.enable_actuation)
     session = VehicleSession(settings, backend)
     mcp = FastMCP("mavlink-mcp")
 
@@ -313,6 +337,11 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         ceiling = session.backend.fence_ceiling_m()
         if ceiling is not None:
             lines.append(f"fence altitude ceiling: {ceiling:.0f} m")
+        clamp_status = getattr(session.backend, "fence_clamp_status", None)
+        if settings.enable_actuation and clamp_status:
+            # Both of the clamp's failure modes used to be silent; an operator flying with
+            # actuation on must see "INACTIVE" rather than discover it at the boundary.
+            lines.append(f"geofence clamp: {clamp_status()}")
         if not settings.enable_actuation:
             lines.append("actuation: DISABLED (server started without --enable-actuation; "
                          "only read-only tools are available)")
@@ -470,8 +499,8 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     @guarded
     async def set_param(name: str, value: float) -> str:
         """Set one autopilot parameter by exact name. The value is written as-is - check
-        the parameter's valid range first. Writes that would switch off a fence or a
-        failsafe are refused."""
+        the parameter's valid range first. Writes to safety-net parameters (the FENCE_*,
+        FS_*, ARMING_* and battery-failsafe families) are refused at any value."""
         err = await off_loop(session.ensure_connected)
         if err:
             return f"error: {err}"
@@ -534,11 +563,37 @@ def main() -> None:
 
     mcp = build_server(load_settings(args))
     if args.transport == "http":
+        if not _is_loopback_host(args.host):
+            raise SystemExit(
+                f"refusing to bind the HTTP transport to '{args.host}': it has no "
+                "authentication, so a non-loopback bind would expose arm/takeoff/set_param "
+                "to the whole network. Bind 127.0.0.1 and put an authenticating reverse "
+                "proxy in front if remote access is really needed.")
         mcp.settings.host = args.host
         mcp.settings.port = args.port
         mcp.run(transport="streamable-http")
     else:
-        mcp.run()
+        # pymavlink prints reconnect notices ("Attempting reconnect", "EOF on TCP socket")
+        # straight to stdout - which under this transport IS the JSON-RPC channel, so a link
+        # blip used to inject non-JSON lines into the protocol stream. Hand the real stdout
+        # to the transport first, then point sys.stdout at stderr so every print() from any
+        # thread lands in the log instead of a JSON frame. (Mirrors FastMCP.run_stdio_async,
+        # which cannot take an explicit stream; the mcp dependency is pinned <2.)
+        import sys
+        from io import TextIOWrapper
+
+        import anyio
+        from mcp.server.stdio import stdio_server
+
+        protocol_out = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
+        sys.stdout = sys.stderr
+
+        async def run_stdio() -> None:
+            async with stdio_server(stdout=protocol_out) as (read_stream, write_stream):
+                await mcp._mcp_server.run(read_stream, write_stream,
+                                          mcp._mcp_server.create_initialization_options())
+
+        anyio.run(run_stdio)
 
 
 if __name__ == "__main__":

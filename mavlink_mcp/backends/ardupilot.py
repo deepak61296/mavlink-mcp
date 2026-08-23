@@ -19,7 +19,7 @@ import queue  # noqa: E402
 import socket  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
-from concurrent.futures import Future  # noqa: E402
+from concurrent.futures import Future, TimeoutError as FutureTimeout  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from typing import Callable, Optional  # noqa: E402
 
@@ -81,8 +81,14 @@ def _result_name(result: int) -> str:
 class MavlinkBackend(RobotBackend):
     """RobotBackend backed by a live ArduPilot vehicle or SITL instance."""
 
-    def __init__(self, link_timeout_s: float = LINK_TIMEOUT_S) -> None:
+    def __init__(self, link_timeout_s: float = LINK_TIMEOUT_S,
+                 configure_vehicle: bool = False) -> None:
         self.link_timeout_s = link_timeout_s
+        # Writing FENCE_ENABLE/FS_GCS_* at connect is an actuation decision, not a telemetry
+        # one: a server started read-only must never change an operator's failsafe setup.
+        self._configure = configure_vehicle
+        self.configured_params: list[str] = []   # what connect() wrote, for describe_vehicle
+        self._sim_detected = False    # vehicle has sent SIMSTATE/SIM_STATE (only SITL does)
         self._link_down = False       # no traffic for link_timeout_s (socket may still be open)
         self._conn = None
         self._owner: threading.Thread | None = None
@@ -148,13 +154,17 @@ class MavlinkBackend(RobotBackend):
         except Exception as exc:  # stream request is best-effort
             return CommandResult.success("connected (stream request failed)", uri=uri, warn=str(exc))
         try:
-            self._submit(self._do_load_fence).result(timeout=10)
+            self._submit(self._do_load_fence).result(timeout=25)
         except Exception as exc:  # fence setup is best-effort; clamps still apply once known
             return CommandResult.success("connected (fence setup failed)", uri=uri, warn=str(exc))
-        try:
-            self._submit(self._do_setup_gcs_failsafe).result(timeout=8)
-        except Exception:  # heartbeats still stream regardless; the FS just won't be pre-enabled
-            pass
+        if self._configure:
+            # Failsafe setup WRITES the FC. A read-only server must observe, never configure:
+            # an operator who runs FS_GCS_ENABLE=0 on purpose (RC-primary, telemetry as a
+            # monitor) must not have it flipped on by a status query.
+            try:
+                self._submit(self._do_setup_gcs_failsafe).result(timeout=8)
+            except Exception:  # heartbeats still stream regardless; the FS just won't be pre-enabled
+                pass
         return CommandResult.success("connected", uri=uri,
                                      fence_radius_m=self._fence.radius_m,
                                      fence_enabled=self._fence.enabled)
@@ -286,6 +296,11 @@ class MavlinkBackend(RobotBackend):
                 fn, fut = self._cmdq.get_nowait()
             except queue.Empty:
                 return
+            # A future whose caller gave up (timeout -> fut.cancel()) must NOT run late: a
+            # takeoff that already reported "failed: TimeoutError" firing at the vehicle
+            # seconds later is the worst kind of surprise.
+            if not fut.set_running_or_notify_cancel():
+                continue
             try:
                 fut.set_result(fn())
             except Exception as exc:  # never let a bad command kill the owner thread
@@ -295,6 +310,16 @@ class MavlinkBackend(RobotBackend):
         fut: Future = Future()
         self._cmdq.put((fn, fut))
         return fut
+
+    def _call(self, fn: Callable[[], object], timeout: float):
+        """Submit to the owner thread and wait; on timeout, cancel so a still-queued command
+        can never execute after its caller has already reported failure."""
+        fut = self._submit(fn)
+        try:
+            return fut.result(timeout=timeout)
+        except FutureTimeout:
+            fut.cancel()
+            raise
 
     # ------------------------------------------------------------------ telemetry
     def _update_telemetry(self, msg) -> None:
@@ -341,10 +366,18 @@ class MavlinkBackend(RobotBackend):
                 w, x, y, z = msg.q                    # actual mount attitude (tracks the slew)
                 s = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
                 self._mount_pitch_deg = math.degrees(math.asin(s))
+            elif msg_type in ("SIMSTATE", "SIM_STATE"):
+                # Only SITL emits these. Positive identification beats any URI heuristic: a
+                # real FC routed over loopback (mavlink-router) looks exactly like "localhost".
+                self._sim_detected = True
             elif msg_type == "STATUSTEXT":
-                low = msg.text.lower()
+                # Vehicle-supplied text that ends up verbatim in tool results the model reads.
+                # The MAVLink bus is unauthenticated, so strip control characters and cap the
+                # length before it can carry anything but a prearm reason.
+                text = "".join(ch for ch in msg.text if ch.isprintable())[:120]
+                low = text.lower()
                 if low.startswith("prearm") or low.startswith("arm:"):
-                    self._last_prearm = msg.text
+                    self._last_prearm = text
                     self._last_prearm_t = time.time()
 
     def get_telemetry(self) -> Telemetry:
@@ -375,6 +408,14 @@ class MavlinkBackend(RobotBackend):
             self._conn.target_system, self._conn.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 4, 1,
         )
+        # Ask for SIMSTATE explicitly too (best-effort): it is how SITL identifies itself,
+        # and the real-vehicle gate stays closed until it has been seen. Real firmware
+        # ignores the request - there is no such message to send.
+        for msg_id in (164, 108):     # ardupilotmega SIMSTATE, common SIM_STATE
+            self._conn.mav.command_long_send(
+                self._conn.target_system, self._conn.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+                msg_id, 1_000_000, 0, 0, 0, 0, 0)   # 1 Hz
         return CommandResult.success("telemetry streams requested")
 
     def _do_get_param(self, name: str, timeout: float = PARAM_TIMEOUT_S,
@@ -417,30 +458,38 @@ class MavlinkBackend(RobotBackend):
         return CommandResult.failure(f"set {name} not confirmed")
 
     def _do_load_fence(self) -> CommandResult:
-        """Read the live geofence, request home, and enable the FC fence as the backstop."""
+        """Read the live geofence, request home, and (actuation only) enable the FC fence.
+
+        Two read attempts per parameter: one lost PARAM_VALUE used to silently disable the
+        horizontal clamp for the whole session (radius read as 0 -> fence "not usable").
+        """
         self._fence = _Fence(
-            enabled=bool(self._do_get_param("FENCE_ENABLE")),
-            radius_m=self._do_get_param("FENCE_RADIUS") or 0.0,
-            alt_max_m=self._do_get_param("FENCE_ALT_MAX") or 0.0,
-            margin_m=self._do_get_param("FENCE_MARGIN") or 0.0,
+            enabled=bool(self._do_get_param("FENCE_ENABLE", attempts=2)),
+            radius_m=self._do_get_param("FENCE_RADIUS", attempts=2) or 0.0,
+            alt_max_m=self._do_get_param("FENCE_ALT_MAX", attempts=2) or 0.0,
+            margin_m=self._do_get_param("FENCE_MARGIN", attempts=2) or 0.0,
         )
         self._conn.mav.command_long_send(
             self._conn.target_system, self._conn.target_component,
             mavutil.mavlink.MAV_CMD_GET_HOME_POSITION, 0, 0, 0, 0, 0, 0, 0, 0)
-        if self._fence.usable() and not self._fence.enabled:
+        if self._configure and self._fence.usable() and not self._fence.enabled:
             if self._do_set_param("FENCE_ENABLE", 1).ok:
                 self._fence.enabled = True
+                self.configured_params.append("FENCE_ENABLE=1")
         return CommandResult.success("fence loaded", radius_m=self._fence.radius_m,
                                      enabled=self._fence.enabled)
 
     def _do_setup_gcs_failsafe(self) -> CommandResult:
         """Enable the FC's GCS failsafe so it RTLs on its own if our heartbeats stop.
 
-        We send a 1 Hz GCS heartbeat from the owner thread; if the agent or link dies the FC sees
-        the GCS go silent and, with FS_GCS enabled, autonomously returns to launch.
+        We send a ~3 Hz GCS heartbeat from the owner thread; if the agent or link dies the FC
+        sees the GCS go silent and, with FS_GCS enabled, autonomously returns to launch.
+        Only called when the server was started with actuation - it writes the FC.
         """
-        self._do_set_param("FS_GCS_ENABLE", 1)   # 1 = RTL on GCS loss (Copter)
-        self._do_set_param("FS_GCS_TIMEOUT", 5)
+        if self._do_set_param("FS_GCS_ENABLE", 1).ok:   # 1 = RTL on GCS loss (Copter)
+            self.configured_params.append("FS_GCS_ENABLE=1")
+        if self._do_set_param("FS_GCS_TIMEOUT", 5).ok:
+            self.configured_params.append("FS_GCS_TIMEOUT=5")
         return CommandResult.success("gcs failsafe enabled")
 
     def _do_get_version(self, timeout: float = 5.0) -> Optional[dict]:
@@ -456,7 +505,8 @@ class MavlinkBackend(RobotBackend):
             if msg is None:
                 break
             if msg.get_type() == "AUTOPILOT_VERSION":
-                git = bytes(msg.flight_custom_version).decode(errors="ignore").strip("\x00")
+                raw = bytes(msg.flight_custom_version).decode(errors="ignore").strip("\x00")
+                git = "".join(ch for ch in raw if ch.isprintable())[:16]   # vehicle-supplied text
                 return {"flight_sw_version": msg.flight_sw_version,
                         "capabilities": msg.capabilities, "git_hash": git}
             self._update_telemetry(msg)
@@ -465,21 +515,20 @@ class MavlinkBackend(RobotBackend):
     def get_version(self) -> Optional[dict]:
         """Firmware version + capability bits (AUTOPILOT_VERSION), fetched once and cached."""
         if self._version is None and self.is_connected:
-            self._version = self._submit(self._do_get_version).result(timeout=8)
+            self._version = self._call(self._do_get_version, timeout=8)
         return self._version
 
     def get_param(self, name: str) -> Optional[float]:
         if not self.is_connected:
             return None
-        return self._submit(
-            lambda: self._do_get_param(name, attempts=PARAM_ATTEMPTS)
-        ).result(timeout=_PARAM_WAIT_S)
+        return self._call(lambda: self._do_get_param(name, attempts=PARAM_ATTEMPTS),
+                          timeout=_PARAM_WAIT_S)
 
     def set_param(self, name: str, value: float) -> CommandResult:
         err = self.link_error()
         if err:
             return CommandResult.failure(err)
-        return self._submit(lambda: self._do_set_param(name, value)).result(timeout=8)
+        return self._call(lambda: self._do_set_param(name, value), timeout=8)
 
     def _run_cmd(self, command: int, *params: float, timeout: float = 5.0) -> CommandResult:
         """Send COMMAND_LONG and wait for the matching COMMAND_ACK. Owner-thread only."""
@@ -488,8 +537,14 @@ class MavlinkBackend(RobotBackend):
             self._conn.target_system, self._conn.target_component,
             command, 0, *args[:7],
         )
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        start = time.time()
+        deadline = start + timeout
+        # IN_PROGRESS extends the wait, but only up to a hard cap: this loop runs on the one
+        # owner thread, and a device that streams IN_PROGRESS forever would otherwise pin it -
+        # taking every other command, including the emergency path, down with it.
+        hard_deadline = start + max(30.0, timeout * 6)
+        in_progress = False
+        while time.time() < min(deadline, hard_deadline):
             self._maybe_heartbeat()
             msg = self._conn.recv_match(blocking=True, timeout=max(0.0, deadline - time.time()))
             if msg is None:
@@ -500,10 +555,14 @@ class MavlinkBackend(RobotBackend):
             if msg.command != command:
                 continue
             if msg.result == mavutil.mavlink.MAV_RESULT_IN_PROGRESS:
+                in_progress = True
                 deadline = time.time() + timeout
                 continue
             ok = msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
             return CommandResult(ok, _result_name(msg.result), {"command": command, "result": msg.result})
+        if in_progress:
+            return CommandResult.failure(
+                f"command still IN_PROGRESS after {time.time() - start:.0f}s", command=command)
         return CommandResult.failure("no COMMAND_ACK", command=command)
 
     def _do_set_mode(self, mode: str) -> CommandResult:
@@ -593,7 +652,8 @@ class MavlinkBackend(RobotBackend):
         continuous behaviour re-sends it. Heading is held (zero yaw-rate): guided mode otherwise
         weathervanes the nose toward the velocity vector, which spins a body-fixed camera off its
         target. The geofence still stops the vehicle at the boundary."""
-        cap = lambda v: max(-MAX_VELOCITY_MS, min(MAX_VELOCITY_MS, float(v)))
+        def cap(v: float) -> float:
+            return max(-MAX_VELOCITY_MS, min(MAX_VELOCITY_MS, float(v)))
         vx, vy, vz = cap(vx), cap(vy), cap(vz)
         mav_frame = (mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED if frame == "body"
                      else mavutil.mavlink.MAV_FRAME_LOCAL_NED)
@@ -612,17 +672,34 @@ class MavlinkBackend(RobotBackend):
         err = self.link_error()
         if err:
             return CommandResult.failure(err)
-        return self._submit(lambda: self._do_set_mode(mode)).result(timeout=8)
+        return self._call(lambda: self._do_set_mode(mode), timeout=8)
 
     def enable(self, on: bool) -> CommandResult:
         err = self.link_error()
         if err:
             return CommandResult.failure(err)
-        return self._submit(lambda: self._do_enable(on)).result(timeout=8)
+        return self._call(lambda: self._do_enable(on), timeout=8)
 
     def mount_pitch_deg(self) -> Optional[float]:
         """Actual gimbal pitch reported by the FC (GIMBAL_DEVICE_ATTITUDE_STATUS), or None."""
         return self._mount_pitch_deg
+
+    @property
+    def is_simulator(self) -> bool:
+        """True once the vehicle has identified itself as SITL (a SIMSTATE/SIM_STATE message).
+
+        Positive evidence from the vehicle, deliberately not a URI heuristic: the standard
+        companion/router topology puts a real flight controller on 127.0.0.1 too.
+        """
+        return self._sim_detected
+
+    def wait_simulator(self, timeout_s: float = 2.0) -> bool:
+        """Give SIMSTATE a moment to arrive before ruling 'real vehicle'. The reader thread
+        keeps processing underneath; this just polls the flag."""
+        deadline = time.time() + timeout_s
+        while not self._sim_detected and time.time() < deadline and self.is_connected:
+            time.sleep(0.1)
+        return self._sim_detected
 
     @property
     def autopilot_id(self) -> Optional[int]:
@@ -644,11 +721,20 @@ class MavlinkBackend(RobotBackend):
             return max(1.0, self._fence.alt_max_m - max(self._fence.margin_m, 1.0))
         return None
 
+    def fence_clamp_status(self) -> str:
+        """Whether the horizontal geofence clamp is actually armed - surfaced in get_status
+        because both of its failure modes (no home fix, unreadable radius) used to be silent."""
+        if self._home_lat is None:
+            return "INACTIVE (home position not received yet)"
+        if not self._fence.usable():
+            return "INACTIVE (fence radius unknown or zero on the vehicle)"
+        return f"active ({self._fence.radius_m:.0f} m radius around home)"
+
     def point_gimbal(self, pitch_deg: float, yaw_deg: float = 0.0) -> CommandResult:
         err = self.link_error()
         if err:
             return CommandResult.failure(err)
-        return self._submit(lambda: self._do_point_gimbal(pitch_deg, yaw_deg)).result(timeout=8)
+        return self._call(lambda: self._do_point_gimbal(pitch_deg, yaw_deg), timeout=8)
 
     def execute_primitive(self, primitive: Primitive) -> CommandResult:
         err = self.link_error()
@@ -657,28 +743,30 @@ class MavlinkBackend(RobotBackend):
         name = primitive.name
         if name == "takeoff":
             altitude_m = float(primitive.params.get("altitude_m", 0.0))
-            return self._submit(lambda: self._do_takeoff(altitude_m)).result(timeout=8)
+            return self._call(lambda: self._do_takeoff(altitude_m), timeout=8)
         if name == "land":
             return self.set_mode("LAND")
         if name == "rtl":
             return self.set_mode("RTL")
         if name == "goto":
-            return self._submit(lambda: self._do_goto(
+            return self._call(lambda: self._do_goto(
                 float(primitive.params["latitude"]), float(primitive.params["longitude"]),
-                primitive.params.get("altitude_m"))).result(timeout=8)
+                primitive.params.get("altitude_m")), timeout=8)
         if name == "move":
-            return self._submit(lambda: self._do_move(
-                str(primitive.params["direction"]), float(primitive.params["distance_m"]))).result(timeout=8)
+            return self._call(lambda: self._do_move(
+                str(primitive.params["direction"]), float(primitive.params["distance_m"])), timeout=8)
         if name == "velocity":
             p = primitive.params
-            return self._submit(lambda: self._do_velocity(
+            return self._call(lambda: self._do_velocity(
                 p.get("vx", 0.0), p.get("vy", 0.0), p.get("vz", 0.0),
-                str(p.get("frame", "body")))).result(timeout=8)
+                str(p.get("frame", "body"))), timeout=8)
         return CommandResult.failure(f"unknown primitive: {name}")
 
     def emergency_stop(self) -> CommandResult:
-        # Minimal: RTL via the same queue. A later phase gives this a priority lane so it
-        # pre-empts an in-flight command instead of waiting behind it.
+        # The CANCELLING of a running flight tool happens above this layer: the session's
+        # interrupt flag unwinds the blocking poll loop immediately. This call is only the
+        # RTL that follows, and it can wait behind at most one in-flight owner-thread
+        # command, each of which is now hard-bounded (see _run_cmd / _call).
         err = self.link_error()
         if err:
             return CommandResult.failure(err)

@@ -11,21 +11,18 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# Parameters that ARE the safety net. For every one of these a value of zero means "off":
-# no fence, no failsafe, no prearm check. An agent that writes one of these disarms the
-# very machinery the rest of this module trusts, so writing zero needs an explicit opt-in.
-_SAFETY_PARAMS = {
-    "FENCE_ENABLE": "the geofence",
-    "FENCE_ACTION": "the response to a fence breach",
-    "FENCE_RADIUS": "the horizontal geofence",
-    "FENCE_ALT_MAX": "the altitude fence",
-    "FS_GCS_ENABLE": "the GCS-loss failsafe, which is this server's own lifeline",
-    "FS_THR_ENABLE": "the RC/throttle failsafe",
-    "FS_EKF_ACTION": "the response to a bad position estimate",
-    "ARMING_CHECK": "the prearm checks",
-    "BATT_FS_LOW_ACT": "the low-battery failsafe",
-    "BATT_FS_CRT_ACT": "the critical-battery failsafe",
-}
+# The vehicle's own safety net. Writes to ANY of these are refused without an explicit
+# opt-in - at any value, not just zero. A value-aware rule ("block turning it off") invites
+# shape-specific bypasses: ARMING_CHECK is a bitmask where 2 disables every prearm check but
+# the barometer while passing a "> 0" test, and a fence is weakened as easily by raising
+# FENCE_RADIUS to 999999 as by zeroing FENCE_ENABLE. Family-wide refusal has no such shapes.
+_SAFETY_PREFIXES = ("FENCE_", "FS_", "ARMING_", "BATT_FS", "BATT2_FS", "BRD_SAFETY")
+_SAFETY_NAMES = frozenset({
+    "FORMAT_VERSION",    # 0 wipes the parameter store on reboot
+    "SYSID_THISMAV",     # changes the vehicle's identity mid-link
+    "SYSID_MYGCS",       # who the FC obeys; wrong value = deaf to this server
+    "BATT_LOW_VOLT", "BATT_CRT_VOLT", "BATT_LOW_MAH", "BATT_CRT_MAH",
+})
 
 
 @dataclass
@@ -96,12 +93,18 @@ def reject(params: dict) -> Optional[str]:
 def param_block(name: str, value: float, allow_unsafe: bool = False) -> Optional[str]:
     """Reason this parameter write is refused, or None if it is allowed.
 
-    Only guards turning a safety net off; ordinary tuning parameters pass straight through.
+    Guards the safety-net families wholesale; ordinary tuning parameters pass straight
+    through. Even a write that looks like a strengthening (FENCE_ENABLE 1) is refused:
+    whether the envelope changes is the operator's decision, made at startup, not the
+    model's decision mid-flight.
     """
     if allow_unsafe:
         return None
-    what = _SAFETY_PARAMS.get(name.upper())
-    if what is not None and float(value) <= 0:
-        return (f"setting {name.upper()} to {value:g} would turn off {what}. "
-                "Restart the server with --allow-unsafe-params if that is really intended.")
+    n = name.upper()
+    if n in _SAFETY_NAMES or n.startswith(_SAFETY_PREFIXES):
+        return (f"{n} is part of the vehicle's safety net (fences, failsafes, arming and "
+                f"battery checks), so set_param refuses to write it (requested {value:g}). "
+                "Weakening one of these is as easy by raising it as by zeroing it, so the "
+                "whole family is off limits. Change it from a ground station, or restart "
+                "the server with --allow-unsafe-params.")
     return None

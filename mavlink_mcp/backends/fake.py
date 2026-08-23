@@ -20,6 +20,7 @@ class FakeBackend(RobotBackend):
 
     autopilot_id = 3       # pretends to be ArduPilot (MAV_AUTOPILOT_ARDUPILOTMEGA)
     vehicle_type_id = 2    # MAV_TYPE_QUADROTOR
+    is_simulator = True    # the real backend proves this via SIMSTATE; a fake IS a simulator
 
     def __init__(self) -> None:
         self._connected = False

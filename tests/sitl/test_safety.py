@@ -37,8 +37,19 @@ def test_safety_parameters_cannot_be_switched_off(grounded, param):
     assert out.startswith("blocked:") and "allow-unsafe-params" in out
 
 
+def test_safety_parameters_blocked_at_any_value(grounded):
+    # Even a write that LOOKS like a strengthening: envelope changes are the operator's
+    # startup decision, not the model's mid-session one (and ARMING_CHECK=2 shows why a
+    # value-aware rule can't be trusted - it's a bitmask that kills every check but baro).
+    out = grounded.call("set_param", name="FENCE_ENABLE", value=1)
+    assert out.startswith("blocked:") and "allow-unsafe-params" in out
+    out = grounded.call("set_param", name="ARMING_CHECK", value=2)
+    assert out.startswith("blocked:")
+
+
 def test_ordinary_parameters_still_write(grounded):
-    assert "FENCE_ENABLE = 1" in grounded.call("set_param", name="FENCE_ENABLE", value=1)
+    # WP_SPD, not the old WPNAV_SPEED - and not ANGLE_MAX, which this firmware renamed away.
+    assert "WP_SPD = 10" in grounded.call("set_param", name="WP_SPD", value=10)
 
 
 def test_unknown_parameter_is_reported_honestly(grounded):

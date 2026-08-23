@@ -96,7 +96,13 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
 
     def disarm(_: dict) -> CommandResult:
         tel = backend.get_telemetry()
-        if (tel.alt_rel_m or 0) > 1.0:
+        if tel.alt_rel_m is None:
+            # Fail closed: "altitude unknown" is not "on the ground". A healthy heartbeat
+            # stream with a dead position stream looks exactly like alt 0 otherwise.
+            return CommandResult.failure(
+                "refusing to disarm: altitude unknown (no position telemetry), so the "
+                "vehicle cannot be confirmed on the ground - land or rtl first")
+        if tel.alt_rel_m > 1.0:
             return CommandResult.failure(
                 f"refusing to disarm while airborne ({tel.alt_rel_m:.1f} m) - land or rtl first")
         res = backend.enable(False)
@@ -107,7 +113,11 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
 
     def takeoff(p: dict) -> CommandResult:
         tel = backend.get_telemetry()
-        if (tel.alt_rel_m or 0) > 1.0:
+        if tel.alt_rel_m is None:
+            return CommandResult.failure(
+                "refusing takeoff: altitude unknown (no position telemetry yet), so the "
+                "vehicle cannot be confirmed on the ground - check get_status first")
+        if tel.alt_rel_m > 1.0:
             return CommandResult.failure(
                 f"already airborne at {tel.alt_rel_m:.1f} m - use goto/move to change position")
         ceiling = lim.max_takeoff_alt_m
@@ -183,6 +193,19 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             time.sleep(0.1)
         return CommandResult.success(f"waited {secs:.0f}s")
 
+    def _must_be_flying(what: str) -> Optional[CommandResult]:
+        """Position moves need an armed, airborne vehicle; anything else is a silent no-op
+        the model would poll for 180 s (README promises 'no move before arming' - keep it)."""
+        tel = backend.get_telemetry()
+        if not tel.armed:
+            return CommandResult.failure(f"not armed - take off before {what}")
+        if tel.alt_rel_m is None:
+            return CommandResult.failure(
+                f"altitude unknown (no position telemetry) - cannot {what}")
+        if tel.alt_rel_m <= 1.0:
+            return CommandResult.failure(f"on the ground - take off before {what}")
+        return None
+
     def _goto_and_wait(target_name: str, primitive: Primitive) -> CommandResult:
         res = backend.execute_primitive(primitive)
         if not res.ok:
@@ -202,12 +225,18 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         return CommandResult.failure(f"did not reach {target_name}")
 
     def goto(p: dict) -> CommandResult:
+        blocked = _must_be_flying("goto")
+        if blocked:
+            return blocked
         return _goto_and_wait("target", Primitive("goto", {
             "latitude": float(p["latitude"]), "longitude": float(p["longitude"]),
             "altitude_m": p.get("altitude_m"),
         }))
 
     def move(p: dict) -> CommandResult:
+        blocked = _must_be_flying("move")
+        if blocked:
+            return blocked
         dist, note = clamp_noted(float(p["distance_m"]), 0.0, lim.max_move_m,
                                  "distance", "the configured max_move_m")
         res = _goto_and_wait(f"{p['direction']} {dist:.0f}m",
