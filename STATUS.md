@@ -93,3 +93,13 @@ a packaging break shows up before a release, not during one.
 - This machine's SITL: wipe eeprom (`-w`) if it won't boot after a hard kill.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
+
+## 0.1.1
+- takeoff: three bugs found by a local model that chose a 1 m takeoff altitude. The vehicle
+  lifted to ~0.7 m, the FC began counting itself as flying and refused every further
+  NAV_TAKEOFF, and the tool retried the doomed command for the full 40 s window while
+  reporting a misleading "vehicle not flight-ready". Fixed: the climb is measured from the
+  starting altitude rather than a fixed 1 m bar (a takeoff to the floor could never cross
+  it), the autopilot's own refusal is reported instead of a guess, a vehicle that is armed
+  and already off the deck is told to land first, and the takeoff floor is 2 m because 1 m
+  parks the aircraft in exactly that band.

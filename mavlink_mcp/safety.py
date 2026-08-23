@@ -28,7 +28,7 @@ _SAFETY_NAMES = frozenset({
 @dataclass
 class SafetyLimits:
     max_takeoff_alt_m: float = 120.0
-    min_takeoff_alt_m: float = 1.0
+    min_takeoff_alt_m: float = 2.0   # below this is not a takeoff; 1 m sat in the FC's "already flying" band
     max_move_m: float = 500.0
     max_goto_distance_m: float = 2000.0
     max_speed_ms: float = 20.0

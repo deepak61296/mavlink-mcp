@@ -120,6 +120,13 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         if tel.alt_rel_m > 1.0:
             return CommandResult.failure(
                 f"already airborne at {tel.alt_rel_m:.1f} m - use goto/move to change position")
+        # Off the ground but under the airborne bar: the FC already counts itself as flying and
+        # will reject NAV_TAKEOFF, so retrying it here just burns the timeout. (A takeoff to the
+        # 1 m floor lands exactly in this band, which is how we found it.)
+        if tel.armed and tel.alt_rel_m > 0.4:
+            return CommandResult.failure(
+                f"the vehicle is already off the ground at {tel.alt_rel_m:.1f} m and armed, so the "
+                "autopilot will refuse a new takeoff - land first, or use goto to change altitude")
         ceiling = lim.max_takeoff_alt_m
         why = "the configured max_takeoff_alt_m"
         fence_cap = backend.fence_ceiling_m()  # above the alt fence the FC refuses the takeoff
@@ -136,8 +143,10 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         # On a fresh boot ArduPilot rejects NAV_TAKEOFF until the EKF finishes aligning, even once
         # armed. Keep issuing it (re-arming if the FC auto-disarmed) until the vehicle actually
         # starts climbing, up to a generous window.
+        start_alt = tel.alt_rel_m
         deadline = time.time() + lim.takeoff_start_timeout_s
         climbing = False
+        refusal = ""
         while time.time() < deadline:
             if interrupt is not None and interrupt.is_set():
                 return CommandResult.failure("interrupted")
@@ -145,13 +154,22 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
                 if not arm({}).ok:
                     time.sleep(1.0)
                     continue
-            backend.execute_primitive(Primitive("takeoff", {"altitude_m": alt}))
-            if poll_until(backend, lambda t: (t.alt_rel_m or 0) > 1.0, 5, interrupt=interrupt):
+            res = backend.execute_primitive(Primitive("takeoff", {"altitude_m": alt}))
+            if not res.ok:
+                # The autopilot's own reason beats a guess. Keep retrying (a fresh boot rejects
+                # NAV_TAKEOFF until the EKF aligns) but report this if we run out of time.
+                refusal = res.message or ""
+            # Measure the climb from where we started, not from a fixed 1 m: a takeoff to the
+            # minimum altitude never crosses an absolute bar, so it read as "never started"
+            # while the vehicle was actually up.
+            if poll_until(backend, lambda t: (t.alt_rel_m or 0) > start_alt + 0.5, 5,
+                          interrupt=interrupt):
                 climbing = True
                 break
             time.sleep(2.0)
         if not climbing:
-            return CommandResult.failure("takeoff did not start (vehicle not flight-ready)")
+            because = f": the autopilot said {refusal}" if refusal else " (vehicle not flight-ready)"
+            return CommandResult.failure(f"takeoff did not start{because}")
         reached = poll_until(backend, lambda t: (t.alt_rel_m or 0) >= alt - 0.7,
                              max(60, alt * 3), interrupt=interrupt)
         if reached is None:

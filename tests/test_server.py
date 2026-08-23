@@ -266,3 +266,41 @@ def _tools(mcp):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_takeoff_refused_when_already_off_the_ground_and_armed():
+    """The 1 m-takeoff trap: the vehicle lifts just off the deck, the FC starts counting
+    itself as flying and refuses every further NAV_TAKEOFF, but 0.7 m slipped under the
+    'already airborne' bar - so the tool retried a doomed command for the whole timeout."""
+    s = _session(enable_actuation=True)
+    s.ensure_connected()
+    s.backend._tel.alt_rel_m, s.backend._tel.armed = 0.7, True
+    out = s.run_flight_tool("takeoff", {"altitude_m": 10})
+    assert out.startswith("failed:")
+    assert "already off the ground" in out and "land first" in out
+
+
+def test_takeoff_below_the_floor_is_raised_to_a_real_takeoff():
+    # 1 m is not a takeoff; it parks the vehicle in the FC's already-flying band.
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("takeoff", {"altitude_m": 1})
+    assert "reached 2.0 m" in out
+    assert "clamped from 1 to 2 m" in out
+
+
+def test_takeoff_reports_the_autopilots_own_refusal():
+    from mavlink_mcp.interfaces import CommandResult
+    from mavlink_mcp.safety import SafetyLimits
+
+    class RefusingBackend(FakeBackend):
+        def execute_primitive(self, primitive):
+            if primitive.name == "takeoff":
+                return CommandResult.failure("MAV_RESULT_DENIED")
+            return super().execute_primitive(primitive)
+
+    settings = Settings(backend="fake", enable_actuation=True,
+                        limits=SafetyLimits(takeoff_start_timeout_s=0.5))
+    s = VehicleSession(settings, RefusingBackend())
+    out = s.run_flight_tool("takeoff", {"altitude_m": 10})
+    # The FC's reason, not our guess about flight-readiness.
+    assert "MAV_RESULT_DENIED" in out
