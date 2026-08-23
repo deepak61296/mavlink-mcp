@@ -41,7 +41,20 @@ Where the project is and what's next. Kept short on purpose.
 - [x] tests/sitl: 31 checks that fly a real SITL mission through the MCP protocol
 - [x] pi bridge extension (pi ships no MCP client of its own)
 
+- [x] safety-gate hardening pass (pre-release review, 2026-08): simulator status now proven
+      by the vehicle (SIMSTATE) instead of inferred from a loopback URI; read-only servers
+      never write the FC (failsafe/fence setup moved behind --enable-actuation and reported
+      by describe_vehicle); set_param refuses the whole FENCE_*/FS_*/ARMING_*/battery
+      families at any value; emergency_stop obeys the same gates as every flight tool;
+      move/goto require armed + airborne and altitude checks fail closed when telemetry is
+      missing; timed-out commands are cancelled instead of firing late; COMMAND_ACK
+      IN_PROGRESS is hard-bounded; pymavlink's stdout chatter is redirected off the
+      JSON-RPC channel; STATUSTEXT/git-hash text is sanitized before the model sees it;
+      the HTTP transport refuses non-loopback binds (it has no auth)
+- [x] pin mcp>=1.2,<2 — the SDK's 2.0.0 removed mcp.server.fastmcp and broke fresh installs
+
 ## Next
+- [ ] migrate to the mcp 2.x server API (the <2 pin is a stopgap)
 - [ ] PX4 backend (MAVSDK) — flight on PX4; detection already routes to it
 - [ ] record the Gazebo flight as a GIF for the readme
 - [ ] detect_target / precision_land tools (ported from the drone-agent codebase)

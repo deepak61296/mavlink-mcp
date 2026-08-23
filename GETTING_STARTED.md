@@ -55,8 +55,9 @@ PATH. If you installed into a venv, either launch the client with that venv acti
 the bare `mavlink-mcp` with the absolute path from `which mavlink-mcp`
 (e.g. `/home/you/mavlink-mcp/.venv/bin/mavlink-mcp`).
 
-Actuation is off by default; `--enable-actuation` turns on the flight tools. Flying anything that
-isn't a local simulator additionally needs `--allow-real-vehicle`.
+Actuation is off by default; `--enable-actuation` turns on the flight tools. Flying anything the
+vehicle itself doesn't prove to be a simulator (SITL streams a `SIMSTATE` message; real firmware
+never does) additionally needs `--allow-real-vehicle`.
 
 ## 3. Start SITL (separate terminal)
 

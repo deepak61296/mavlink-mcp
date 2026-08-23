@@ -11,9 +11,10 @@ Claude Code / Codex → flying SITL.
 
 ## Status
 
-**Stable** — covered by the unit suite and flown by `pytest -m sitl` against ArduPilot SITL:
-the read-only tools, `arm`/`disarm`/`takeoff`/`land`/`rtl`/`goto`/`move`/`orbit`, `set_param` with
-the safety guards, the geofence + GCS-heartbeat failsafe, and `capture_camera`.
+**Solid in simulation (beta)** — covered by the unit suite and flown by `pytest -m sitl` against
+ArduPilot SITL: the read-only tools, `arm`/`disarm`/`takeoff`/`land`/`rtl`/`goto`/`move`/`orbit`/
+`wait`, `set_param` with the safety guards, the geofence + GCS-heartbeat failsafe. The Gazebo
+camera path is exercised manually (see below), not by the SITL suite.
 
 **Working, less battle-tested** — the HTTP transport, `--camera` over `rtsp://`/`udp://`, the pi
 bridge. Not yet flown on real hardware.
@@ -146,7 +147,7 @@ all read from the vehicle, not from configuration. The same info is published as
 resources (`mavlink://vehicle`, `mavlink://telemetry`) for clients that read those.
 
 Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `goto`, `move`,
-`orbit`, `set_mode`, `set_param`, `point_camera`, `emergency_stop`.
+`orbit`, `wait`, `set_mode`, `set_param`, `point_camera`, `emergency_stop`.
 
 - `move` takes north/south/east/west, the four diagonals (northeast/…), or forward/back/left/right,
   plus a distance. Blocks until it arrives.
@@ -154,7 +155,9 @@ Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `
 - `takeoff`/`goto`/`move`/`orbit`/`land`/`rtl` all block until the vehicle actually gets
   there — `rtl` returns once it is down and disarmed, not when the mode switches — and every
   reply ends with a `[state: alt X m, MODE, armed]` line read from live telemetry.
-- `emergency_stop` cancels a flight command that is still running instead of queueing behind it.
+- `emergency_stop` interrupts a running flight command — the blocking tool unwinds immediately —
+  then commands RTL. The RTL itself may wait behind at most one in-flight MAVLink exchange
+  (each is hard-bounded at a few seconds).
 - Flight commands run off the event loop, so `get_status` and `emergency_stop` still answer
   immediately while the vehicle is in the middle of a long move.
 - `capture_camera` returns the frame as an MCP image, so a multimodal model can look at it. Point
@@ -170,15 +173,29 @@ work fine with the wheel.
 
 ## Safety
 
-- Actuation is off unless you pass `--enable-actuation`. Without it, only the read-only tools exist.
-- Even then, flying anything that isn't a local simulator needs `--allow-real-vehicle` on top.
-- `set_param` refuses writes that would switch off a fence or a failsafe (`FENCE_ENABLE`,
-  `FS_GCS_ENABLE`, `ARMING_CHECK`, ...) unless you pass `--allow-unsafe-params`.
+- Actuation is off unless you pass `--enable-actuation`. Without it, only the read-only tools
+  exist — and a read-only server **never writes to the flight controller**, not even failsafe
+  setup: connecting and reading status leaves the vehicle's configuration untouched.
+- Even then, flying needs the vehicle to prove it is a simulator: ArduPilot SITL streams a
+  `SIMSTATE` message, real firmware never does. No `SIMSTATE` — including a real FC routed to
+  `127.0.0.1` by mavlink-router — means every flight tool (`emergency_stop` included) is refused
+  until you pass `--allow-real-vehicle`. The connection string is never trusted for this.
+- Flight tools are refused on anything that isn't a multirotor (a Plane or Rover heartbeat gets
+  telemetry tools only), and on PX4 until its backend exists.
+- `set_param` refuses writes to the safety-net parameter families at **any** value — `FENCE_*`,
+  `FS_*`, `ARMING_*`, battery failsafes, `FORMAT_VERSION`, `SYSID_*` — not just "off" values,
+  because a fence is weakened as easily by raising `FENCE_RADIUS` as by zeroing `FENCE_ENABLE`.
+  Opt out with `--allow-unsafe-params`.
 - Altitude is clamped to a limit and to the vehicle's fence; horizontal targets are pulled back
-  inside the geofence.
-- No disarm while airborne, no takeoff while flying, no move before arming.
-- The server enables the FC geofence and a GCS-heartbeat failsafe, so the vehicle returns to launch
-  on its own if the agent or link dies.
+  inside the geofence. `get_status` reports whether the horizontal clamp is actually active
+  (it needs a home fix and a readable fence radius) instead of failing silently.
+- No disarm while airborne, no takeoff while flying, no move/goto before armed and airborne —
+  and when altitude is unknown (position stream lost), these checks fail **closed**, not open.
+- With actuation enabled, the server enables the FC geofence and a GCS-heartbeat failsafe, so
+  the vehicle returns to launch on its own if the agent or link dies. `describe_vehicle` lists
+  exactly which parameters were written at connect.
+- Timed-out commands cannot fire late: a flight command that already reported failure is
+  cancelled before it can reach the vehicle afterwards.
 
 None of this replaces a human with a kill switch on a real flight.
 
@@ -194,6 +211,8 @@ None of this replaces a human with a kill switch on a real flight.
 | `--backend` | `MAVLINK_MCP_BACKEND` | `auto` | `auto` (detect from heartbeat), `ardupilot`, `fake` |
 | `--config` | `MAVLINK_MCP_CONFIG` | none | TOML config file, see below |
 | `--transport` | | `stdio` | `stdio` or `http` |
+| `--host` | | `127.0.0.1` | bind address for `--transport http`. **No auth exists on the HTTP transport**, so a non-loopback bind is refused at startup — front it with an authenticating proxy instead |
+| `--port` | | `8000` | port for `--transport http` |
 
 The link opens lazily on the first tool call, so the server starts fine before SITL is up.
 
