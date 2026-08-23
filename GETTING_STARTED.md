@@ -104,6 +104,32 @@ pytest                # unit tests, no vehicle needed
 pytest -m sitl        # flies a full mission against SITL (start SITL first; ~5 min)
 ```
 
+## Local models via Ollama (fully offline flying)
+
+Any client that can talk to Ollama can fly through this server with no cloud at all — tested
+end-to-end with gemma (an ~8B multimodal model) driving a full takeoff → move → wait → RTL
+mission. Two traps cost us an evening each, so they're documented here:
+
+1. **Bake a bigger context into a model tag.** This server's 18 tool schemas plus a typical
+   client system prompt are ~10k tokens, but Ollama's OpenAI-compatible endpoint truncates
+   silently at its 4096-token default AND ignores `num_ctx` sent in request bodies. The model
+   then "never sees its tools" — symptoms are silent turns, invented tool names, or
+   Python-flavored pseudo-calls. The fix is one line:
+
+   ```bash
+   printf 'FROM gemma4:e4b\nPARAMETER num_ctx 16384\nPARAMETER temperature 0\n' | ollama create gemma-drone -f -
+   ```
+
+   Point your client at `gemma-drone`. (Clients using Ollama's native `/api/chat` are not
+   affected and can also pass `think: false` there for much faster tool calls; the
+   OpenAI-compat endpoint ignores that flag too.)
+
+2. **Phrase safety-relevant asks explicitly when the model is small.** "Disable the geofence"
+   can make a small model invent parameter names that don't exist; "set FENCE_ENABLE to 0"
+   reliably reaches `set_param` — where the server refuses it, which is the point. Judge any
+   local-model flight by the code-verified `[state: ...]` lines in tool results, never by the
+   model's own prose: small models narrate optimistically.
+
 ## If a step breaks
 
 - Client can't find the server -> the venv/PATH note in step 2.
