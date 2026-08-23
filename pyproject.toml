@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.26"]     # PEP 639 license metadata (license-files) needs >=1.26
 build-backend = "hatchling.build"
 
 [project]
@@ -26,7 +26,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
 ]
 dependencies = [
-    "mcp>=1.2",
+    "mcp>=1.2,<2",     # 2.0 removed mcp.server.fastmcp; migration tracked in STATUS.md
     "pymavlink>=2.4.40",
     "tomli>=2.0; python_version < '3.11'",
 ]
@@ -53,7 +53,7 @@ packages = ["mavlink_mcp"]
 [tool.hatch.build.targets.sdist]
 # Ship what makes the package auditable and reproducible; leave out local scaffolding.
 include = ["mavlink_mcp", "tests", "scripts", "integrations",
-           "README.md", "STATUS.md", "LICENSE", "pyproject.toml", ".flake8"]
+           "README.md", "GETTING_STARTED.md", "STATUS.md", "LICENSE", "pyproject.toml", ".flake8"]
 
 [tool.pytest.ini_options]
 # The sitl suite needs a running ArduPilot SITL, so it is opt-in: `pytest -m sitl`.
