@@ -304,3 +304,9 @@ def test_takeoff_reports_the_autopilots_own_refusal():
     out = s.run_flight_tool("takeoff", {"altitude_m": 10})
     # The FC's reason, not our guess about flight-readiness.
     assert "MAV_RESULT_DENIED" in out
+
+
+def test_describe_vehicle_says_simulator_or_real():
+    assert "SIMULATOR" in _session().vehicle_info()
+    real = _real_session().vehicle_info()
+    assert "REAL AIRCRAFT" in real and "--allow-real-vehicle" in real

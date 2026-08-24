@@ -217,6 +217,16 @@ class VehicleSession:
                              + (", UNHEALTHY: " + ", ".join(bad) if bad else ""))
             else:
                 lines.append("sensors: not reported yet")
+        # Say plainly what is on the other end. A model that cannot tell a simulator from an
+        # aircraft cannot calibrate how careful to be, and "it was blocked" is a poor way to
+        # find out. SITL proves itself by streaming SIMSTATE; anything silent is treated as real.
+        waiter = getattr(b, "wait_simulator", None)
+        sim = waiter(2.0) if waiter else getattr(b, "is_simulator", None)
+        if sim is True:
+            lines.append("vehicle: SIMULATOR (it streams SIMSTATE, so this is SITL)")
+        elif sim is False:
+            lines.append("vehicle: treated as a REAL AIRCRAFT (no SIMSTATE seen) - fly it with "
+                         "the care that deserves; flight tools need --allow-real-vehicle")
         ceiling = b.fence_ceiling_m()
         if ceiling is not None:
             lines.append(f"fence altitude ceiling: {ceiling:.0f} m")
