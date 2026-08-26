@@ -9,6 +9,30 @@ Drones are dangerous — flight tools are **off by default**. Read [Safety](#saf
 New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks a fresh machine through install →
 Claude Code / Codex → flying SITL.
 
+## What it looks like
+
+One prompt, a full surveillance sweep: take off, fly a box photographing every corner, orbit a
+structure, climb for a wide shot, come home and land.
+
+![A drone flying a surveillance sweep in Gazebo while the agent narrates it](docs/media/flight.gif)
+
+You ask in plain English, and it plans the whole mission before it moves:
+
+![The mission given to the agent as a single plain-English paragraph](docs/media/prompt.gif)
+
+Then it flies, and tells you what it actually sees rather than what it was told to expect:
+
+![The agent calling mavlink-mcp and describing each photographed corner](docs/media/tool-calls.gif)
+
+And when you ask it to switch your geofence off, it will not:
+
+![The agent refusing to disable the geofence and explaining why](docs/media/refusal.gif)
+
+That refusal is the point of the project. `set_param` hard-refuses every write to `FENCE_*`,
+raising or lowering, so a single chat message can never take a guardrail down. The two legitimate
+ways to change it both live outside the conversation: a real ground station, or restarting the
+server with `--allow-unsafe-params`.
+
 ## Status
 
 **Solid in simulation (beta)** — covered by the unit suite and flown by `pytest -m sitl` against
