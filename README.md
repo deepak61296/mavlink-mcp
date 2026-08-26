@@ -20,7 +20,7 @@ camera path is exercised manually (see below), not by the SITL suite.
 bridge. Not yet flown on real hardware.
 
 **Planned** — a PX4 backend (MAVSDK): PX4 is detected from its heartbeat today, but flight is
-refused until the backend lands. And a PyPI release. See
+refused until the backend lands. See
 [STATUS.md](https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md).
 
 ## Install
@@ -30,8 +30,14 @@ Needs **Python 3.10+**. To actually fly you also need **ArduPilot SITL** built (
 Gazebo camera needs Gazebo Harmonic + the [world](#with-a-camera-in-gazebo). The server itself
 starts without either — the link opens lazily on the first tool call.
 
-Not on PyPI yet — install from source. This puts the `mavlink-mcp` command on your PATH, which is
-what the MCP client configs below call:
+Either install puts the `mavlink-mcp` command on your PATH, which is what the MCP client
+configs below call:
+
+```bash
+pip install mavlink-mcp           # add "mavlink-mcp[camera]" for the RTSP/Gazebo camera tool
+```
+
+Or from source, to hack on it:
 
 ```bash
 git clone git@github.com:deepak61296/mavlink-mcp.git

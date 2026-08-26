@@ -65,8 +65,8 @@ Where the project is and what's next. Kept short on purpose.
 
 ## Releasing
 
-The package builds clean and the wheel is verified to install and fly on its own; the only
-step left is the upload, which needs a PyPI token.
+Published: `pip install mavlink-mcp` installs 0.1.2 from PyPI and the console script runs
+from a clean virtualenv.
 
 ```bash
 python -m build            # sdist + wheel into dist/
@@ -79,7 +79,6 @@ there, so it is the only place it lives. CI builds and installs the wheel on eve
 a packaging break shows up before a release, not during one.
 
 ## Known gaps
-- Not on PyPI yet, so the `pip install mavlink-mcp` in the readme does not work.
 - PX4 is detected but nothing has ever been run against PX4 SITL.
 - The `[camera]` extra installs `opencv-python`, which has no GStreamer and so cannot read
   the Gazebo stream; `rtsp://` and `file:` are fine. The server now says so plainly instead
