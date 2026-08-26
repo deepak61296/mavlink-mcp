@@ -23,6 +23,12 @@ OFF_TARGET_M = 5.0
 # Saying "arrived" then is the same lie in a smaller coat: a photo taken on that report is
 # taken from the wrong height.
 ALT_TOLERANCE_M = 3.0
+# ...and that band is metres wide, so a climb crosses it while still moving. Measured on SITL,
+# a 30 m climb reports 27.3 m at the instant it crosses and holds 30.00 m two seconds later:
+# close enough to be safe, wrong enough that the report reads as a shortfall that never
+# happened. Wait out those seconds so the number handed back is the one the vehicle keeps.
+SETTLE_TOLERANCE_M = 0.5
+SETTLE_WAIT_S = 6.0
 
 
 def _span(metres: float) -> str:
@@ -306,6 +312,10 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
 
         arrived = poll_until(backend, there, 180, interrupt=interrupt)
         if arrived:
+            if talt is not None:
+                poll_until(backend, lambda t: t.alt_rel_m is not None
+                           and abs(float(talt) - t.alt_rel_m) <= SETTLE_TOLERANCE_M,
+                           SETTLE_WAIT_S, interrupt=interrupt)
             return CommandResult.success(_arrival_report(target_name, res, before, want))
         if interrupt is not None and interrupt.is_set():
             return CommandResult.failure("interrupted")

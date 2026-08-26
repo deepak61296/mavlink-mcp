@@ -91,10 +91,13 @@ def test_set_altitude_changes_height_and_holds_position(drone):
         return float(re.search(r"alt_rel_m=(-?[\d.]+)", drone.call("get_status")).group(1))
 
     start = where()
+    # Tight on purpose. The arrival band is 3 m, so crossing it is not the same as holding
+    # the height: before the settle wait this read 27.3 m on a 30 m climb and the report -
+    # true for that instant - looked like a shortfall the vehicle never actually had.
     assert "arrived" in drone.call("set_altitude", altitude_m=30)
-    assert abs(height() - 30) <= 4, "set_altitude returned before reaching the height"
+    assert abs(height() - 30) <= 1, "set_altitude reported before the climb settled"
     assert "arrived" in drone.call("set_altitude", altitude_m=15)
-    assert abs(height() - 15) <= 4
+    assert abs(height() - 15) <= 1, "set_altitude reported before the descent settled"
     assert geo.distance_m(*start, *where()) < 6, "it drifted while changing altitude"
     drone.call("rtl")
     drone.wait_disarmed()

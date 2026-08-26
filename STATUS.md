@@ -97,6 +97,16 @@ a packaging break shows up before a release, not during one.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
 
+## 0.1.5
+- **Altitude reports wait for the vehicle to settle.** The arrival band is 3 m wide, so a
+  climb crosses it while still moving: `set_altitude` to 30 m returned with the vehicle at
+  27.3 m and holding 30.00 m two seconds later. Nothing was wrong with the flight — but the
+  number handed back read as a 2.7 m shortfall that never happened, and both models tested on
+  M2 duly reported "27.3" to the operator. Arrival now waits out those seconds (bounded at
+  6 s, and free when the vehicle is already there), so the altitude reported is the one it
+  keeps. Costs 1.6 s on a 30 m climb, measured on SITL.
+- The SITL assertion moved from 4 m to 1 m to hold that line.
+
 ## 0.1.4
 - **New tool: `set_altitude`.** Climb or descend holding position. `goto` could already do
   this, but only if the model first read its own coordinates and passed them back unchanged,
