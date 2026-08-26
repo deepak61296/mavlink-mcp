@@ -42,6 +42,14 @@ jobs:
           from mavlink_mcp.server import build_server, Settings
           import asyncio
           tools = asyncio.run(build_server(Settings(backend='fake', enable_actuation=True)).list_tools())
-          assert len(tools) == 18, len(tools)
-          print('wheel ok:', len(tools), 'tools')
+          names = {t.name for t in tools}
+          # Name the tools rather than counting them: a bare count fails on every addition
+          # (it just did) while staying silent about the thing that actually matters, which
+          # is a tool going missing from a published wheel.
+          missing = {'get_status', 'check_armable', 'describe_vehicle', 'get_param',
+                     'capture_camera', 'arm', 'disarm', 'takeoff', 'land', 'rtl', 'goto',
+                     'move', 'orbit', 'wait', 'set_altitude', 'set_mode', 'set_param',
+                     'point_camera', 'emergency_stop'} - names
+          assert not missing, f'missing from the wheel: {sorted(missing)}'
+          print('wheel ok:', len(names), 'tools')
           "
