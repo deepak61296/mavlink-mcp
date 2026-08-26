@@ -133,16 +133,16 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
                 "vehicle cannot be confirmed on the ground - check get_status first")
         if tel.alt_rel_m > 1.0:
             return CommandResult.failure(
-                f"already airborne at {tel.alt_rel_m:.1f} m - to change altitude call goto with "
-                "your current latitude and longitude and a new altitude_m; move only changes "
-                "position, and has no altitude of its own")
+                f"already airborne at {tel.alt_rel_m:.1f} m - use set_altitude to climb or "
+                "descend from here; move only changes position, and has no altitude of its own")
         # Off the ground but under the airborne bar: the FC already counts itself as flying and
         # will reject NAV_TAKEOFF, so retrying it here just burns the timeout. (A takeoff to the
         # 1 m floor lands exactly in this band, which is how we found it.)
         if tel.armed and tel.alt_rel_m > 0.4:
             return CommandResult.failure(
                 f"the vehicle is already off the ground at {tel.alt_rel_m:.1f} m and armed, so the "
-                "autopilot will refuse a new takeoff - land first, or use goto to change altitude")
+                "autopilot will refuse a new takeoff - land first, or use set_altitude to "
+                "change height")
         ceiling = lim.max_takeoff_alt_m
         why = "the configured max_takeoff_alt_m"
         fence_cap = backend.fence_ceiling_m()  # above the alt fence the FC refuses the takeoff

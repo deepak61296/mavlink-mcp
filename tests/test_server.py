@@ -494,3 +494,26 @@ def test_set_altitude_rejects_nonsense_before_it_flies():
     s.run_flight_tool("takeoff", {"altitude_m": 20})
     out = s.run_flight_tool("set_altitude", {"altitude_m": -5})
     assert out.startswith("failed:") and "greater than zero" in out, out
+
+
+def test_a_takeoff_while_airborne_points_at_set_altitude():
+    """The refusal used to teach the pre-set_altitude workaround - goto with your own
+    coordinates - which is the exact step every model got wrong. Adding the tool is not
+    enough: a model that reaches for takeoff out of habit has to be handed the tool that
+    exists now, not the trap it replaced."""
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 20})
+    out = s.run_flight_tool("takeoff", {"altitude_m": 30})
+    assert out.startswith("failed:"), out
+    assert "set_altitude" in out, out
+    assert "latitude" not in out, "still teaching the old goto idiom"
+
+
+def test_goto_describes_set_altitude_rather_than_the_workaround():
+    """The tool description shapes the plan at discovery time, before the model can err."""
+    from mavlink_mcp.server import build_server
+    import asyncio
+    srv = build_server(Settings(backend="fake", enable_actuation=True))
+    doc = {t.name: (t.description or "") for t in asyncio.run(srv.list_tools())}["goto"]
+    assert "set_altitude" in doc, doc
+    assert "latitude and longitude from get_status" not in doc

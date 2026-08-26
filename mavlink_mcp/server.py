@@ -482,9 +482,8 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     async def goto(latitude: Latitude, longitude: Longitude,
                    altitude_m: Optional[Altitude] = None) -> str:
         """Fly to a GPS position and block until the vehicle is there at that altitude.
-        Targets outside the geofence are pulled back inside it. To change altitude while
-        airborne, read latitude and longitude from get_status and pass them here unchanged
-        with a new altitude_m - takeoff only works from the ground."""
+        Targets outside the geofence are pulled back inside it. To change height without
+        moving, use set_altitude instead."""
         return await off_loop(session.run_flight_tool, "goto",
                               {"latitude": latitude, "longitude": longitude,
                                "altitude_m": altitude_m})
