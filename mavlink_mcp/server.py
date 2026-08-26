@@ -286,7 +286,8 @@ class VehicleSession:
             # a valid one, and clamping it into a real flight hides the mistake from the model.
             return f"failed: {bad}\n{self.state_line()}"
         if not self._act_lock.acquire(blocking=False):
-            return "blocked: another flight command is still running - wait for it to finish."
+            return ("blocked: another flight command is still running - wait for it to finish, "
+                    "or call emergency_stop, which cancels it and returns to launch.")
         try:
             res: CommandResult = self.tools[name](params)
         except Exception as exc:
@@ -506,7 +507,9 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
     async def set_mode(mode: Mode) -> str:
-        """Switch flight mode (GUIDED, LOITER, ALT_HOLD, AUTO, RTL, LAND)."""
+        """Switch flight mode. Only modes that hold themselves without a pilot on the RC
+        sticks are offered: GUIDED (companion control), AUTO (a loaded mission), RTL, LAND.
+        To stop and hold position, hover with wait rather than switching mode."""
         return await off_loop(session.run_flight_tool, "set_mode", {"mode": mode})
 
     @mcp.tool(annotations=_FLIGHT)

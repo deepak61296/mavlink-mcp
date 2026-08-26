@@ -96,6 +96,32 @@ a packaging break shows up before a release, not during one.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
 
+## 0.1.3
+- **set_mode offered two modes that drop an RC-less aircraft.** ALT_HOLD and LOITER take
+  their climb rate from the pilot's throttle channel. On a companion computer with no RC
+  transmitter bound that reads as zero, and the vehicle descends at full rate: measured on
+  SITL, 19.5 m to the ground in 12 s for either mode. Worse, the tool answered
+  `mode -> ALT_HOLD [state: alt 19.5 m, ALT_HOLD, armed]`, because the state line is sampled
+  before the fall begins — so the model was told the aircraft was holding altitude while it
+  was on its way down, and no later result ever corrected it. The enum is now
+  GUIDED/AUTO/RTL/LAND: only modes that hold themselves with nobody on the sticks. This is
+  the same reasoning that already kept `orbit` in GUIDED instead of CIRCLE; it had simply
+  never been carried across to `set_mode`.
+- `get_status` printed a bare `mode=` before the first heartbeat decoded a mode name. A model
+  read the blank and filled it in itself, reporting "Mode: Loiter" for a vehicle that was in
+  no such mode. It prints `mode=?` now.
+- The busy-lock refusal now names `emergency_stop`, which is exempt from it. A client whose
+  MCP timeout (30 s) was shorter than a blocking poll (180 s) spent that window refusing
+  every call, and the model tried to land five times without being told the way out.
+- `takeoff` refused while airborne used to suggest "goto/move to change position" when the
+  thing being asked for was altitude — `move` has no altitude argument. It now spells out the
+  goto-with-current-lat/lon form. This one defect caused the same mission to fail on two
+  different models.
+- `point_camera` returned a bare `MAV_RESULT_FAILED`. It now says what that refusal almost
+  always means (no mount configured, MNT1_TYPE = 0) and what to do in Gazebo.
+- Found by four MCP clients flying the mission suite in parallel — Claude Code, Codex, pi and
+  opencode — each against its own SITL instance. Nothing in this list came from code review.
+
 ## 0.1.2
 - **goto and move reported arrivals that never happened.** The geofence rewrites a target to
   a point inside the boundary before it is sent, and the arrival wait was for the rewritten

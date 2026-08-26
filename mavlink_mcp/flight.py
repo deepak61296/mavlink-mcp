@@ -39,7 +39,9 @@ def format_telemetry(t: Telemetry) -> str:
                     "The readings below are unknown, not current.")
         return "NOT CONNECTED to a vehicle."
     parts = [
-        f"mode={t.mode}", f"armed={t.armed}",
+        # An unset mode must print as "?" - a bare "mode=" reads as a blank the model fills
+        # in itself, and one did: it reported "Mode: Loiter" for a vehicle that was not.
+        f"mode={t.mode or '?'}", f"armed={t.armed}",
         f"alt_rel_m={t.alt_rel_m:.1f}" if t.alt_rel_m is not None else "alt_rel_m=?",
         f"heading_deg={t.heading_deg:.0f}" if t.heading_deg is not None else "heading_deg=?",
         f"groundspeed_ms={t.groundspeed_ms:.1f}" if t.groundspeed_ms is not None else "",
@@ -131,7 +133,9 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
                 "vehicle cannot be confirmed on the ground - check get_status first")
         if tel.alt_rel_m > 1.0:
             return CommandResult.failure(
-                f"already airborne at {tel.alt_rel_m:.1f} m - use goto/move to change position")
+                f"already airborne at {tel.alt_rel_m:.1f} m - to change altitude call goto with "
+                "your current latitude and longitude and a new altitude_m; move only changes "
+                "position, and has no altitude of its own")
         # Off the ground but under the airborne bar: the FC already counts itself as flying and
         # will reject NAV_TAKEOFF, so retrying it here just burns the timeout. (A takeoff to the
         # 1 m floor lands exactly in this band, which is how we found it.)

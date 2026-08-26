@@ -12,7 +12,12 @@ from ..interfaces import (
     Telemetry,
 )
 
-_MODES = ["GUIDED", "LOITER", "ALT_HOLD", "AUTO", "RTL", "LAND"]
+# Only modes an aircraft can hold with nobody on the sticks. ALT_HOLD and LOITER take their
+# climb rate from the pilot's throttle channel, so on a companion computer with no RC bound it
+# reads as zero and the vehicle descends at full rate - measured on SITL, 19.5 m to the ground
+# in 12 s, with the tool's own state line still reporting 19.5 m because it samples before the
+# fall starts. Exactly the reasoning that already keeps orbit in GUIDED rather than CIRCLE.
+_MODES = ["GUIDED", "AUTO", "RTL", "LAND"]
 
 
 class FakeBackend(RobotBackend):

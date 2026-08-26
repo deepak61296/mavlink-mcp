@@ -34,7 +34,12 @@ from ..interfaces import (  # noqa: E402
     Telemetry,
 )
 
-_MODES = ["GUIDED", "LOITER", "ALT_HOLD", "AUTO", "RTL", "LAND"]
+# Only modes an aircraft can hold with nobody on the sticks. ALT_HOLD and LOITER take their
+# climb rate from the pilot's throttle channel, so on a companion computer with no RC bound it
+# reads as zero and the vehicle descends at full rate - measured on SITL, 19.5 m to the ground
+# in 12 s, with the tool's own state line still reporting 19.5 m because it samples before the
+# fall starts. Exactly the reasoning that already keeps orbit in GUIDED rather than CIRCLE.
+_MODES = ["GUIDED", "AUTO", "RTL", "LAND"]
 _EKF_POS_HORIZ_ABS = 1 << 4  # EKF_STATUS_REPORT flag: absolute horizontal position ok
 
 # Seconds of silence before the link counts as down. Matches MAVProxy's 'timeout' default;
@@ -739,7 +744,16 @@ class MavlinkBackend(RobotBackend):
         err = self.link_error()
         if err:
             return CommandResult.failure(err)
-        return self._call(lambda: self._do_point_gimbal(pitch_deg, yaw_deg), timeout=8)
+        res = self._call(lambda: self._do_point_gimbal(pitch_deg, yaw_deg), timeout=8)
+        if not res.ok:
+            # A bare MAV_RESULT_FAILED tells the model nothing it can act on. That refusal
+            # nearly always means no mount is configured, which is a setup answer.
+            return CommandResult.failure(
+                f"the autopilot refused the mount command ({res.message}). Most often no "
+                "gimbal is configured on this vehicle (MNT1_TYPE = 0). In Gazebo the "
+                "rendered camera is driven over gz rather than MAVLink, so aiming it needs "
+                "the server started with --camera gazebo.")
+        return res
 
     def execute_primitive(self, primitive: Primitive) -> CommandResult:
         err = self.link_error()
