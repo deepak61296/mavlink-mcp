@@ -85,9 +85,10 @@ a packaging break shows up before a release, not during one.
   of producing empty frames, but the extra still cannot give you a working Gazebo camera.
 - `camera.py` hardcodes the Gazebo world name in the gimbal joint topic.
 - FrameHub has no shutdown path; it dies with the process.
-- A stdio server whose client dies is not always reaped, and it keeps the vehicle's single
-  MAVLink slot. The next session then sees a vehicle that never sends a heartbeat. Check
-  with `ss -tnp | grep 5760` before blaming the autopilot.
+- If a vehicle looks dead (boots fine, never sends a heartbeat), something else is holding
+  its single MAVLink slot: `ss -tnp | grep 5760` names the owner. The stdio server itself
+  exits ~0.5 s after its client closes stdin, so it is not usually the culprit - a detached
+  *client* process still running is.
 
 ## Notes
 - pymavlink today; MAVSDK comes with the PX4 backend.
@@ -95,6 +96,34 @@ a packaging break shows up before a release, not during one.
 - This machine's SITL: wipe eeprom (`-w`) if it won't boot after a hard kill.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
+
+## 0.1.4
+- **New tool: `set_altitude`.** Climb or descend holding position. `goto` could already do
+  this, but only if the model first read its own coordinates and passed them back unchanged,
+  and that is the step every client we tested got wrong — one omitted them and its own
+  validator rejected the call before it was sent, another had to be taught the idiom by a
+  refusal message. Asking for the one number that actually changes removes the chance to get
+  it wrong. Twelve lines of logic, and it closes the single most-failed mission in the suite.
+- **Removed the unreachable `velocity` primitive.** No tool issued it, the interface did not
+  declare it, the fake backend did not implement it and no test covered it — 31 lines of
+  untested code in a package that flies aircraft. It is in the history if a follow loop ever
+  wants it.
+- **goto now waits for the altitude it was given, not just the coordinates.** The arrival
+  poll watched the ground track only, so a goto to the position the vehicle already occupies
+  — which is exactly the altitude-change idiom 0.1.3 started recommending — returned the
+  instant it was sent. A model read "arrived at target" at 9.5 m of a 30 m climb and flew the
+  next leg from there. 0.1.3 pointed models at a path that did not work; this makes the path
+  work. The same advice now also lives in `goto`'s own description, because a model that
+  never retries `takeoff` never sees `takeoff`'s version of it.
+- **The takeoff floor is no longer blamed on the geofence.** `takeoff(1)` answered "altitude
+  clamped from 1 to 2 m by the vehicle's altitude fence" with the fence 98 m away and wholly
+  uninvolved; `clamp_noted` was given the ceiling's reason for both bounds. The altitude was
+  right either way, but a model that believes it has been taught a false fact about its own
+  envelope.
+- Both found by a client-honesty investigation that also cleared the model of a suspected
+  fabrication: pi's own JSON-schema validator was silently absorbing tool calls above the
+  transport, so server-side capture alone under-counted what the model actually attempted.
+  Any future honesty audit has to read the client's event stream too.
 
 ## 0.1.3
 - **set_mode offered two modes that drop an RC-less aircraft.** ALT_HOLD and LOITER take

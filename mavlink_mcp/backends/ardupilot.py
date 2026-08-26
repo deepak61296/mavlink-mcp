@@ -60,11 +60,6 @@ RETRY_FAST_S = 0.1
 RETRY_FAST_TRIES = 10
 RETRY_SLOW_S = 1.0
 
-# Hard cap on any commanded velocity component (m/s). A velocity setpoint is honoured by the FC
-# for only ~3 s, so a continuous loop must re-send it; this bounds a single command while the
-# geofence still stops the vehicle at the boundary. Callers (e.g. a follow loop) stay gentler.
-MAX_VELOCITY_MS = 5.0
-
 
 @dataclass
 class _Fence:
@@ -656,28 +651,6 @@ class MavlinkBackend(RobotBackend):
         tlat, tlon = geo.offset_m(tel.lat_deg, tel.lon_deg, north_m, east_m)
         return self._do_goto(tlat, tlon, tel.alt_rel_m)
 
-    def _do_velocity(self, vx: float, vy: float, vz: float, frame: str) -> CommandResult:
-        """Command a velocity setpoint (m/s). frame 'body' = forward/right/down relative to the
-        vehicle; 'ned' = earth north/east/down. The FC holds a setpoint for only ~3 s, so a
-        continuous behaviour re-sends it. Heading is held (zero yaw-rate): guided mode otherwise
-        weathervanes the nose toward the velocity vector, which spins a body-fixed camera off its
-        target. The geofence still stops the vehicle at the boundary."""
-        def cap(v: float) -> float:
-            return max(-MAX_VELOCITY_MS, min(MAX_VELOCITY_MS, float(v)))
-        vx, vy, vz = cap(vx), cap(vy), cap(vz)
-        mav_frame = (mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED if frame == "body"
-                     else mavutil.mavlink.MAV_FRAME_LOCAL_NED)
-        # type_mask 0b0000011111000111: ignore position, acceleration, force and absolute yaw;
-        # use the three velocity fields and command the yaw-rate (0 below = hold heading).
-        self._conn.mav.set_position_target_local_ned_send(
-            0, self._conn.target_system, self._conn.target_component,
-            mav_frame, 0b0000011111000111,
-            0, 0, 0, vx, vy, vz, 0, 0, 0, 0, 0,
-        )
-        return CommandResult.success(f"velocity vx={vx:.1f} vy={vy:.1f} vz={vz:.1f} ({frame})",
-                                     vx=vx, vy=vy, vz=vz, frame=frame)
-
-    # ------------------------------------------------------------------ public API
     def set_mode(self, mode: str) -> CommandResult:
         err = self.link_error()
         if err:
@@ -774,11 +747,6 @@ class MavlinkBackend(RobotBackend):
         if name == "move":
             return self._call(lambda: self._do_move(
                 str(primitive.params["direction"]), float(primitive.params["distance_m"])), timeout=8)
-        if name == "velocity":
-            p = primitive.params
-            return self._call(lambda: self._do_velocity(
-                p.get("vx", 0.0), p.get("vy", 0.0), p.get("vz", 0.0),
-                str(p.get("frame", "body"))), timeout=8)
         return CommandResult.failure(f"unknown primitive: {name}")
 
     def emergency_stop(self) -> CommandResult:

@@ -180,7 +180,7 @@ all read from the vehicle, not from configuration. The same info is published as
 resources (`mavlink://vehicle`, `mavlink://telemetry`) for clients that read those.
 
 Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `goto`, `move`,
-`orbit`, `wait`, `set_mode`, `set_param`, `point_camera`, `emergency_stop`.
+`orbit`, `wait`, `set_altitude`, `set_mode`, `set_param`, `point_camera`, `emergency_stop`.
 
 - `move` takes north/south/east/west, the four diagonals (northeast/…), or forward/back/left/right,
   plus a distance. Blocks until it arrives.

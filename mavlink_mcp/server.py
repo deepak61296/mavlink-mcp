@@ -196,6 +196,13 @@ class VehicleSession:
         if err:
             return f"error: {err}"
         b = self.backend
+        # The heartbeat that names the autopilot can land a moment after the link is up, and
+        # describe_vehicle is often a client's very first call. Without this the answer is
+        # "unknown, unknown" for a vehicle that is perfectly healthy - seen once under load,
+        # never reproduced idle. Same brief wait the sensor bits below already do.
+        deadline = time.time() + 2.0
+        while getattr(b, "autopilot_id", None) is None and time.time() < deadline:
+            time.sleep(0.1)
         ap = autopilot_name(getattr(b, "autopilot_id", None))
         vtype = vehicle_type_name(getattr(b, "vehicle_type_id", None))
         version = getattr(b, "get_version", lambda: None)()
@@ -474,8 +481,10 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     @guarded
     async def goto(latitude: Latitude, longitude: Longitude,
                    altitude_m: Optional[Altitude] = None) -> str:
-        """Fly to a GPS position and block until arrival. Targets outside the geofence are
-        pulled back inside it."""
+        """Fly to a GPS position and block until the vehicle is there at that altitude.
+        Targets outside the geofence are pulled back inside it. To change altitude while
+        airborne, read latitude and longitude from get_status and pass them here unchanged
+        with a new altitude_m - takeoff only works from the ground."""
         return await off_loop(session.run_flight_tool, "goto",
                               {"latitude": latitude, "longitude": longitude,
                                "altitude_m": altitude_m})
@@ -488,6 +497,15 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         left, right (relative to heading). Blocks until arrival."""
         return await off_loop(session.run_flight_tool, "move",
                               {"direction": direction, "distance_m": distance_m})
+
+    @mcp.tool(annotations=_FLIGHT)
+    @guarded
+    async def set_altitude(altitude_m: Altitude) -> str:
+        """Climb or descend to an altitude, holding position. This is how you change height
+        while airborne - takeoff only works from the ground. Blocks until the altitude is
+        reached."""
+        return await off_loop(session.run_flight_tool, "set_altitude",
+                              {"altitude_m": altitude_m})
 
     @mcp.tool(annotations=_FLIGHT)
     @guarded

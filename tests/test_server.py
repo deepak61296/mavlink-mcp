@@ -422,3 +422,75 @@ def test_a_busy_server_points_at_the_way_out():
         s._act_lock.release()
     assert out.startswith("blocked:"), out
     assert "emergency_stop" in out, out
+
+
+# --------------------------------------------------------------- clamp attribution
+
+def test_the_takeoff_floor_is_not_blamed_on_the_fence():
+    """takeoff(1) answered "clamped from 1 to 2 m by the vehicle's altitude fence". The
+    fence was 98 m away and had nothing to do with it - the floor did. The altitude was
+    right either way, but the model was taught a false fact about its own envelope."""
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("takeoff", {"altitude_m": 1})
+    assert "clamped from 1 to 2" in out, out
+    assert "fence" not in out, out
+    assert "floor" in out, out
+
+
+def test_the_fence_is_still_named_when_the_fence_is_what_clamped():
+    from mavlink_mcp.safety import SafetyLimits
+    settings = Settings(backend="fake", enable_actuation=True,
+                        limits=SafetyLimits(max_takeoff_alt_m=500))
+    s = VehicleSession(settings, FakeBackend())      # fake fence ceiling is 100 m
+    out = s.run_flight_tool("takeoff", {"altitude_m": 400})
+    assert "fence" in out and "floor" not in out, out
+
+
+def test_goto_waits_for_the_altitude_it_was_given():
+    """The arrival poll watched the ground track only, so the altitude-change idiom that
+    takeoff recommends - goto to the coordinates you are already at - returned instantly.
+    A model read "arrived at target" at 9.5 m of a 30 m climb."""
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    tel = s.backend.get_telemetry()
+    out = s.run_flight_tool("goto", {"latitude": tel.lat_deg, "longitude": tel.lon_deg,
+                                     "altitude_m": 30})
+    assert "below the target altitude" not in out, out
+    assert abs((s.backend.get_telemetry().alt_rel_m or 0) - 30) <= 3, out
+
+
+# --------------------------------------------------------------- set_altitude
+
+def test_set_altitude_changes_height_without_moving():
+    """Every client tested failed M2 on the same step: goto can change altitude, but only if
+    the model first reads its own coordinates and passes them back unchanged. Asking for the
+    one number that actually changes removes the chance to get it wrong."""
+    from mavlink_mcp import geo
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 10})
+    before = s.backend.get_telemetry()
+    out = s.run_flight_tool("set_altitude", {"altitude_m": 30})
+    after = s.backend.get_telemetry()
+    assert abs((after.alt_rel_m or 0) - 30) <= 3, out
+    assert geo.distance_m(before.lat_deg, before.lon_deg,
+                          after.lat_deg, after.lon_deg) < 3, "it drifted while climbing"
+
+
+def test_set_altitude_descends_too():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 30})
+    s.run_flight_tool("set_altitude", {"altitude_m": 12})
+    assert abs((s.backend.get_telemetry().alt_rel_m or 0) - 12) <= 3
+
+
+def test_set_altitude_is_refused_on_the_ground():
+    s = _session(enable_actuation=True)
+    out = s.run_flight_tool("set_altitude", {"altitude_m": 30})
+    assert out.startswith("failed:") and "take off" in out, out
+
+
+def test_set_altitude_rejects_nonsense_before_it_flies():
+    s = _session(enable_actuation=True)
+    s.run_flight_tool("takeoff", {"altitude_m": 20})
+    out = s.run_flight_tool("set_altitude", {"altitude_m": -5})
+    assert out.startswith("failed:") and "greater than zero" in out, out

@@ -149,7 +149,9 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         if fence_cap is not None and fence_cap < ceiling:
             ceiling, why = fence_cap, "the vehicle's altitude fence"
         alt, note = clamp_noted(float(p.get("altitude_m", 10.0)),
-                                lim.min_takeoff_alt_m, ceiling, "altitude", why)
+                                lim.min_takeoff_alt_m, ceiling, "altitude", why,
+                                why_low="the takeoff floor, below which the autopilot counts "
+                                        "the vehicle as already flying")
         if not backend.get_telemetry().armed:  # arm first (waits for armable, reports if it can't)
             ares = arm({})
             if not ares.ok:
@@ -284,11 +286,25 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         tlat, tlon = res.detail.get("target_lat"), res.detail.get("target_lon")
         if tlat is None or tlon is None:
             return res
-        arrived = poll_until(
-            backend,
-            lambda t: t.lat_deg is not None
-            and geo.distance_m(t.lat_deg, t.lon_deg, tlat, tlon) <= ARRIVE_RADIUS_M,
-            180, interrupt=interrupt)
+        talt = res.detail.get("target_alt_m")
+
+        def there(t: Telemetry) -> bool:
+            """Arrival is a place AND a height.
+
+            The poll used to watch the ground track only, so a goto to the coordinates the
+            vehicle is already at - which is exactly the altitude-change idiom takeoff now
+            recommends - returned the instant it was sent. A model read "arrived at target"
+            at 9.5 m of a 30 m climb and flew the next leg from there.
+            """
+            if t.lat_deg is None:
+                return False
+            if geo.distance_m(t.lat_deg, t.lon_deg, tlat, tlon) > ARRIVE_RADIUS_M:
+                return False
+            if talt is None or t.alt_rel_m is None:
+                return True
+            return abs(float(talt) - t.alt_rel_m) <= ALT_TOLERANCE_M
+
+        arrived = poll_until(backend, there, 180, interrupt=interrupt)
         if arrived:
             return CommandResult.success(_arrival_report(target_name, res, before, want))
         if interrupt is not None and interrupt.is_set():
@@ -315,6 +331,25 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
                                                 "distance_m": dist}),
                              want=("move", dist, str(p["direction"])))
         return CommandResult(res.ok, res.message + note, res.detail) if note else res
+
+    def set_altitude(p: dict) -> CommandResult:
+        """Climb or descend without moving.
+
+        goto already does this, but only if the model first reads its own coordinates and
+        passes them back unchanged - and that is the step every model we tested got wrong.
+        One omitted them and its client rejected the call before it was sent; another had to
+        be taught the idiom by a refusal message. Asking only for the number that actually
+        changes removes the chance to get it wrong.
+        """
+        blocked = _must_be_flying("changing altitude")
+        if blocked:
+            return blocked
+        tel = backend.get_telemetry()
+        if tel.lat_deg is None or tel.lon_deg is None:
+            return CommandResult.failure("no position fix - cannot hold position while climbing")
+        return _goto_and_wait("the new altitude", Primitive("goto", {
+            "latitude": tel.lat_deg, "longitude": tel.lon_deg,
+            "altitude_m": float(p["altitude_m"])}))
 
     def orbit(p: dict) -> CommandResult:
         radius, note = clamp_noted(float(p["radius_m"]), lim.min_orbit_radius_m,
@@ -345,4 +380,5 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         "get_status": get_status, "check_armable": check_armable, "set_mode": set_mode,
         "arm": arm, "disarm": disarm, "takeoff": takeoff, "land": land, "rtl": rtl,
         "wait": wait, "move": move, "goto": goto, "orbit": orbit,
+        "set_altitude": set_altitude,
     }

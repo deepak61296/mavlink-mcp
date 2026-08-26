@@ -70,3 +70,36 @@ def test_rtl_blocks_until_down_and_disarmed(drone):
 
 def test_camera_tool_answers_without_a_camera_configured(drone):
     assert "no camera configured" in drone.call("capture_camera")
+
+
+def test_set_altitude_changes_height_and_holds_position(drone):
+    """M2 is the mission every client in the matrix failed or degraded on, always at the same
+    step: goto changes altitude only if the model feeds its own coordinates back unchanged.
+    This tool asks for the one number that actually changes."""
+    assert drone.until_armable()
+    if "armed=True" not in drone.call("get_status"):
+        drone.call("takeoff", altitude_m=10)
+
+    import re
+    from mavlink_mcp import geo
+
+    def where():
+        m = re.search(r"pos=\((-?[\d.]+),(-?[\d.]+)\)", drone.call("get_status"))
+        return float(m.group(1)), float(m.group(2))
+
+    def height():
+        return float(re.search(r"alt_rel_m=(-?[\d.]+)", drone.call("get_status")).group(1))
+
+    start = where()
+    assert "arrived" in drone.call("set_altitude", altitude_m=30)
+    assert abs(height() - 30) <= 4, "set_altitude returned before reaching the height"
+    assert "arrived" in drone.call("set_altitude", altitude_m=15)
+    assert abs(height() - 15) <= 4
+    assert geo.distance_m(*start, *where()) < 6, "it drifted while changing altitude"
+    drone.call("rtl")
+    drone.wait_disarmed()
+
+
+def test_set_altitude_is_refused_on_the_ground(grounded):
+    out = grounded.call("set_altitude", altitude_m=25)
+    assert out.startswith("failed:") and "take off" in out, out

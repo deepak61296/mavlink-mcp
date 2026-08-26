@@ -42,16 +42,23 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def clamp_noted(value: float, low: float, high: float, what: str, why: str) -> tuple[float, str]:
+def clamp_noted(value: float, low: float, high: float, what: str, why: str,
+                why_low: Optional[str] = None) -> tuple[float, str]:
     """Clamp, and return the note to append to the result when it actually bit.
 
     Silent clamping is how 'takeoff to 500 m' becomes a 120 m flight that reports success:
     the model has no way to learn its request was not honoured, so it never corrects itself.
+
+    why_low names the floor when it is a different rule from the ceiling. Without it,
+    takeoff(1) answered "clamped from 1 to 2 m by the vehicle's altitude fence" - the fence
+    was 98 m away and had nothing to do with it, and a model that believes that has been
+    taught a false fact about its own envelope.
     """
     bounded = clamp(value, low, high)
     if bounded == value:
         return bounded, ""
-    return bounded, f" ({what} clamped from {value:g} to {bounded:g} m by {why})"
+    reason = why_low if (bounded > value and why_low) else why
+    return bounded, f" ({what} clamped from {value:g} to {bounded:g} m by {reason})"
 
 
 def reject(params: dict) -> Optional[str]:
