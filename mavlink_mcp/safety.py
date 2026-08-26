@@ -90,6 +90,29 @@ def reject(params: dict) -> Optional[str]:
     return None
 
 
+# MAVLink carries a parameter name in a 16-byte field and ArduPilot's are upper-case
+# letters, digits and underscores, so anything else cannot name a real parameter. Refusing
+# it here rather than sending it matters twice over: the vehicle answers an unknown name
+# with silence, which costs two timeouts and then reads back as "no reply" - the same
+# answer a lost link gives - and an unbounded name is echoed into the reply, which turns a
+# read-only tool into a way to put arbitrary text in front of the model as if it came from
+# the aircraft.
+_PARAM_NAME_MAX = 16
+
+
+def param_name_error(name: str) -> Optional[str]:
+    """Reason this string cannot be a parameter name, or None if it could be."""
+    if not name:
+        return "parameter name is empty"
+    if len(name) > _PARAM_NAME_MAX:
+        return (f"parameter names are at most {_PARAM_NAME_MAX} characters, so "
+                f"{name[:_PARAM_NAME_MAX]!r}... ({len(name)} characters) cannot be one")
+    if not all(ch.isascii() and (ch.isalnum() or ch == "_") for ch in name):
+        return (f"parameter names use only letters, digits and underscores, so "
+                f"{name!r} cannot be one")
+    return None
+
+
 def param_block(name: str, value: float, allow_unsafe: bool = False) -> Optional[str]:
     """Reason this parameter write is refused, or None if it is allowed.
 

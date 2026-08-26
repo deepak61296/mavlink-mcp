@@ -16,6 +16,18 @@ from .interfaces import CommandResult, Primitive, RobotBackend, Telemetry
 from .safety import SafetyLimits, clamp, clamp_noted
 
 ARRIVE_RADIUS_M = 2.5
+# Slack over ARRIVE_RADIUS_M before a shortfall is worth reporting: arriving 3 m from a
+# target is arriving, being pulled up 200 m short of it is not.
+OFF_TARGET_M = 5.0
+# goto's arrival test is horizontal, so the vehicle can be over the target and still climbing.
+# Saying "arrived" then is the same lie in a smaller coat: a photo taken on that report is
+# taken from the wrong height.
+ALT_TOLERANCE_M = 3.0
+
+
+def _span(metres: float) -> str:
+    """Distances a person reads at a glance; 16 900 km beats 16900481 m."""
+    return f"{metres / 1000:.0f} km" if metres >= 10_000 else f"{metres:.0f} m"
 
 
 def format_telemetry(t: Telemetry) -> str:
@@ -224,7 +236,44 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             return CommandResult.failure(f"on the ground - take off before {what}")
         return None
 
-    def _goto_and_wait(target_name: str, primitive: Primitive) -> CommandResult:
+    def _arrival_report(target_name: str, res: CommandResult, before: Telemetry,
+                        want: Optional[tuple]) -> str:
+        """Say where the vehicle actually stopped, not where it was asked to go.
+
+        The geofence pulls a target back inside the boundary before it is ever sent, so
+        "arrived" is only ever true of the clamped point. Reporting it under the requested
+        point's name told a model that asked for a coordinate 16 000 km away that it had
+        got there, and it then planned the next leg from a position the aircraft had never
+        occupied. A move that starts on the boundary is the sharp case: it travels nothing
+        at all and still read back as a success.
+        """
+        fence = res.message[res.message.find(" ("):] if " (" in (res.message or "") else ""
+        now = backend.get_telemetry()
+        alt_target = res.detail.get("target_alt_m")
+        climbing = ""
+        if alt_target is not None and now.alt_rel_m is not None:
+            gap = float(alt_target) - now.alt_rel_m
+            if abs(gap) > ALT_TOLERANCE_M:
+                climbing = (f", still {abs(gap):.0f} m "
+                            f"{'below' if gap > 0 else 'above'} the target altitude")
+        tail = f"{climbing}{fence}"
+        if want is None or now.lat_deg is None or now.lon_deg is None:
+            return f"arrived at {target_name}{tail}"
+        if want[0] == "goto":
+            short = geo.distance_m(now.lat_deg, now.lon_deg, want[1], want[2])
+            if short > OFF_TARGET_M:
+                return (f"stopped {_span(short)} short of the position requested, at "
+                        f"{now.lat_deg:.6f},{now.lon_deg:.6f}{tail}")
+        elif want[0] == "move" and before.lat_deg is not None:
+            flown = geo.distance_m(before.lat_deg, before.lon_deg, now.lat_deg, now.lon_deg)
+            if flown < want[1] - OFF_TARGET_M:
+                return (f"stopped after {flown:.0f} m of the {want[1]:.0f} m {want[2]} "
+                        f"requested{tail}")
+        return f"arrived at {target_name}{tail}"
+
+    def _goto_and_wait(target_name: str, primitive: Primitive,
+                       want: Optional[tuple] = None) -> CommandResult:
+        before = backend.get_telemetry()
         res = backend.execute_primitive(primitive)
         if not res.ok:
             return res
@@ -237,7 +286,7 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             and geo.distance_m(t.lat_deg, t.lon_deg, tlat, tlon) <= ARRIVE_RADIUS_M,
             180, interrupt=interrupt)
         if arrived:
-            return CommandResult.success(f"arrived at {target_name}")
+            return CommandResult.success(_arrival_report(target_name, res, before, want))
         if interrupt is not None and interrupt.is_set():
             return CommandResult.failure("interrupted")
         return CommandResult.failure(f"did not reach {target_name}")
@@ -246,10 +295,10 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         blocked = _must_be_flying("goto")
         if blocked:
             return blocked
+        lat, lon = float(p["latitude"]), float(p["longitude"])
         return _goto_and_wait("target", Primitive("goto", {
-            "latitude": float(p["latitude"]), "longitude": float(p["longitude"]),
-            "altitude_m": p.get("altitude_m"),
-        }))
+            "latitude": lat, "longitude": lon, "altitude_m": p.get("altitude_m"),
+        }), want=("goto", lat, lon))
 
     def move(p: dict) -> CommandResult:
         blocked = _must_be_flying("move")
@@ -258,7 +307,9 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         dist, note = clamp_noted(float(p["distance_m"]), 0.0, lim.max_move_m,
                                  "distance", "the configured max_move_m")
         res = _goto_and_wait(f"{p['direction']} {dist:.0f}m",
-                             Primitive("move", {"direction": str(p["direction"]), "distance_m": dist}))
+                             Primitive("move", {"direction": str(p["direction"]),
+                                                "distance_m": dist}),
+                             want=("move", dist, str(p["direction"])))
         return CommandResult(res.ok, res.message + note, res.detail) if note else res
 
     def orbit(p: dict) -> CommandResult:

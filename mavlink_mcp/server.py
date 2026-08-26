@@ -38,7 +38,7 @@ from .backends import (
 from .config import Settings, load_settings
 from .flight import build_flight_tools, format_telemetry
 from .interfaces import CommandResult, RobotBackend
-from .safety import param_block, reject
+from .safety import param_block, param_name_error, reject
 
 
 # Tool annotations tell the client what a tool does before it calls it. Clients use these to
@@ -381,19 +381,23 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         """Read one autopilot parameter by exact name (e.g. FENCE_ALT_MAX). Note that
         parameter names differ between firmware versions - if a name is not found,
         the vehicle's firmware may use a different one."""
+        name = name.strip().upper()
+        bad = param_name_error(name)
+        if bad:
+            return f"error: {bad}"
         err = await off_loop(session.ensure_connected)
         if err:
             return f"error: {err}"
         getter = getattr(session.backend, "get_param", None)
         if getter is None:
             return "error: this backend does not expose parameters"
-        value = await off_loop(getter, name.upper())
+        value = await off_loop(getter, name)
         if value is not None:
-            return f"{name.upper()} = {value:g}"
+            return f"{name} = {value:g}"
         # Deliberately not "not found": the vehicle stays silent both for a parameter it does
         # not have and for a request that never arrived, and the difference matters to whoever
         # is deciding whether the name is wrong or the link is.
-        return (f"{name.upper()}: no reply after 2 requests - either this firmware has no such "
+        return (f"{name}: no reply after 2 requests - either this firmware has no such "
                 "parameter, or the request was lost. Names move between versions "
                 "(WPNAV_SPEED is WP_SPD on current master).")
 
@@ -511,6 +515,10 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         """Set one autopilot parameter by exact name. The value is written as-is - check
         the parameter's valid range first. Writes to safety-net parameters (the FENCE_*,
         FS_*, ARMING_* and battery-failsafe families) are refused at any value."""
+        name = name.strip().upper()
+        bad = param_name_error(name)
+        if bad:
+            return f"error: {bad}"
         err = await off_loop(session.ensure_connected)
         if err:
             return f"error: {err}"
@@ -520,7 +528,7 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
         setter = getattr(session.backend, "set_param", None)
         if setter is None:
             return "error: this backend does not expose parameters"
-        res = await off_loop(setter, name.upper(), value)
+        res = await off_loop(setter, name, value)
         return res.message if res.ok else f"failed: {res.message}"
 
     @mcp.tool(annotations=_FLIGHT)

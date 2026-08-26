@@ -120,6 +120,33 @@ mavlink-mcp --enable-actuation --camera gazebo
 Ask the agent to take off, point the camera down, fly north and take a photo, and it gets
 back a picture of the field.
 
+## On a real vehicle
+
+Nothing here has been flown on hardware yet, so treat this as the configuration you would
+start from rather than a tested recipe.
+
+Two things change from SITL, and they are configured independently — the autopilot link and
+the camera are separate streams that happen to come off the same aircraft:
+
+```bash
+mavlink-mcp \
+  --conn serial:/dev/ttyACM0:57600 \
+  --camera rtsp://192.168.1.10:8554/cam \
+  --enable-actuation --allow-real-vehicle
+```
+
+- **`--conn`** — `serial:/dev/ttyACM0:57600` for a USB/telemetry radio, or `udp:...` if a
+  router is already fanning the link out. If a GCS is also connected, read
+  [Running alongside a GCS](#running-alongside-a-gcs) first: one MAVLink endpoint serves one
+  client.
+- **`--camera`** — your camera's own RTSP URL, which the operator has to supply; the server
+  has no way to discover it. Unlike `--camera gazebo`, RTSP is read through OpenCV's FFMPEG
+  backend, so the plain `pip install ".[camera]"` wheel is enough — no GStreamer build
+  needed. Try `--camera file:<some.jpg>` first to confirm your client renders images at all.
+- **`--allow-real-vehicle`** — required. Actuation is refused on anything that does not
+  identify itself as a simulator (see [Safety](#safety)), and the connection string is never
+  what decides that.
+
 ## Running alongside a GCS
 
 The server owns the link. ArduPilot SITL — and a typical serial flight controller — serve a

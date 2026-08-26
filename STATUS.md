@@ -86,6 +86,9 @@ a packaging break shows up before a release, not during one.
   of producing empty frames, but the extra still cannot give you a working Gazebo camera.
 - `camera.py` hardcodes the Gazebo world name in the gimbal joint topic.
 - FrameHub has no shutdown path; it dies with the process.
+- A stdio server whose client dies is not always reaped, and it keeps the vehicle's single
+  MAVLink slot. The next session then sees a vehicle that never sends a heartbeat. Check
+  with `ss -tnp | grep 5760` before blaming the autopilot.
 
 ## Notes
 - pymavlink today; MAVSDK comes with the PX4 backend.
@@ -93,6 +96,28 @@ a packaging break shows up before a release, not during one.
 - This machine's SITL: wipe eeprom (`-w`) if it won't boot after a hard kill.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
+
+## 0.1.2
+- **goto and move reported arrivals that never happened.** The geofence rewrites a target to
+  a point inside the boundary before it is sent, and the arrival wait was for the rewritten
+  point — but the result was phrased with the *requested* one. `goto(48.86, 2.29)` from
+  Canberra answered "arrived at target" while sitting 18 000 km away, and a `move` that
+  started on the boundary answered "arrived at north 300m" after travelling a metre. The
+  aircraft was never in danger; the model's picture of where it was, was. Both now report
+  where the vehicle actually stopped and why, and an arrival that is still climbing to its
+  target altitude says so instead of reading as complete.
+- **Parameter names that MAVLink cannot carry are refused before the vehicle is asked.** The
+  wire field is 16 bytes, so a longer name could only ever time out twice and come back as
+  "no reply" — indistinguishable from a lost link — after echoing the whole string into the
+  reply. That echo also made a read-only tool into a way to put arbitrary text in front of
+  the model as though the aircraft had said it.
+- **Prearm text from the vehicle is quoted and attributed.** STATUSTEXT crosses an
+  unauthenticated bus and lands verbatim in a tool result, with room for a sentence shaped
+  like an instruction; delimiting it lets a model tell a report from an order.
+- Found by adversarial probing over the real MCP protocol against SITL, not by review. What
+  held up under the same probing: NaN/infinity arguments, out-of-range altitudes, dangerous
+  flight modes (ACRO is not in the enum), lower-cased safety parameters, flight commands
+  issued out of order, and concurrent conflicting commands.
 
 ## 0.1.1
 - takeoff: three bugs found by a local model that chose a 1 m takeoff altitude. The vehicle

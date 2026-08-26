@@ -55,7 +55,9 @@ def test_ordinary_parameters_still_write(grounded):
 def test_unknown_parameter_is_reported_honestly(grounded):
     """ArduPilot answers an unknown parameter with silence, which is also what a lost
     request looks like - so the reply must not assert the parameter does not exist."""
-    out = grounded.call("get_param", name="ZZ_DOES_NOT_EXIST")
+    # 16 characters or fewer, or the name never reaches the vehicle and we would be
+    # testing the length check instead of the silence it is meant to explain.
+    out = grounded.call("get_param", name="ZZ_NOT_REAL")
     assert "no reply" in out
     assert "not found" not in out
 
@@ -118,3 +120,38 @@ def test_emergency_stop_preempts_a_running_command(drone):
     assert "RTL" in probe
     assert "interrupt" in running or "failed" in running, running[:120]
     assert "armed=False" in drone.wait_disarmed()
+
+
+def test_goto_far_outside_the_fence_reports_the_shortfall(drone):
+    """Found by flying it: goto(Paris) answered "arrived at target" from 18 000 km away,
+    because the fence had quietly rewritten the target and the wait was for the rewritten
+    one. The aircraft was never in danger; the model's picture of where it was, was."""
+    assert drone.until_armable()
+    if "armed=True" not in drone.call("get_status"):
+        drone.call("takeoff", altitude_m=20)
+    out = drone.call("goto", latitude=48.8584, longitude=2.2945, altitude_m=25)
+    assert "short of the position requested" in out, out
+    assert not out.startswith("arrived")
+    assert "fence" in out
+    drone.call("rtl")
+    drone.wait_disarmed()
+
+
+def test_a_move_the_fence_cuts_short_reports_what_was_actually_flown(drone):
+    assert drone.until_armable()
+    if "armed=True" not in drone.call("get_status"):
+        drone.call("takeoff", altitude_m=20)
+    drone.call("move", direction="north", distance_m=400)      # out to the boundary
+    out = drone.call("move", direction="north", distance_m=300)
+    assert "stopped after" in out and "300 m north requested" in out, out
+    drone.call("rtl")
+    drone.wait_disarmed()
+
+
+@pytest.mark.parametrize("name", ["A" * 300, "", "\U0001f681"])
+def test_a_name_mavlink_cannot_carry_never_reaches_the_vehicle(grounded, name):
+    """Two 5 s timeouts and a 300-character echo, for a string that cannot be a parameter."""
+    start = time.monotonic()
+    out = grounded.call("get_param", name=name)
+    assert out.startswith("error:"), out
+    assert time.monotonic() - start < 2.0, "the request was sent to the vehicle anyway"

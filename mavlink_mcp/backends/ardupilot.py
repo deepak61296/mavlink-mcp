@@ -399,7 +399,12 @@ class MavlinkBackend(RobotBackend):
         if home is None:
             return CommandResult.failure("home/origin not set yet (position still settling)")
         if prearm and (time.time() - prearm_t) < 4.0:
-            return CommandResult.failure(f"prearm: {prearm}")
+            # Quoted and labelled because it is not ours: STATUSTEXT arrives over an
+            # unauthenticated bus, lands verbatim in a tool result, and 120 characters is
+            # room enough for a sentence shaped like an instruction. A model that can see
+            # where the vehicle's words start and stop can treat them as the report they
+            # are rather than as something addressed to it.
+            return CommandResult.failure(f'prearm refused, vehicle reported: "{prearm}"')
         return CommandResult.success("ready to arm")
 
     # ------------------------------------------------------------------ commands (owner-thread only)
