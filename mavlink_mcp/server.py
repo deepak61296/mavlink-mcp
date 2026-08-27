@@ -509,8 +509,12 @@ def build_server(settings: Settings, backend: Optional[RobotBackend] = None) -> 
     @mcp.tool(annotations=_FLIGHT)
     @guarded
     async def orbit(radius_m: Radius, clockwise: bool = True) -> str:
-        """Fly one full circle around the current position, holding altitude. radius_m is
-        required (1-100 m). Must already be airborne. Blocks until the circle is complete."""
+        """Fly one full circle around the current position, holding altitude, with the nose
+        and camera held on the centre the whole way round. Ends back over the centre, not on
+        the rim. Point the vehicle at what you want to inspect FIRST, then orbit it: the
+        circle is centred on wherever the vehicle is when this is called. radius_m is required
+        (1-100 m); very small radii are refused because the circle would be smaller than the
+        arrival tolerance. Must already be airborne. Blocks until the circle is complete."""
         return await off_loop(session.run_flight_tool, "orbit",
                               {"radius_m": radius_m, "clockwise": clockwise})
 

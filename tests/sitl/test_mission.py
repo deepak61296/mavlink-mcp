@@ -14,6 +14,10 @@ def _pos(status: str) -> tuple[float, float]:
     return float(body.split(",")[0]), float(body.split(",")[1].split(")")[0])
 
 
+def _heading(status: str) -> float:
+    return float(status.split("heading_deg=")[1].split()[0])
+
+
 def test_discovery_reports_the_real_vehicle(drone):
     info = drone.call("describe_vehicle")
     assert "ArduPilot" in info
@@ -55,6 +59,47 @@ def test_orbit_holds_altitude(drone):
     out = drone.call("orbit", radius_m=12)
     assert "flew a 12 m circle" in out
     assert abs(float(out.split("alt ")[1].split(" m")[0]) - before) < 3.0
+
+
+def test_orbit_keeps_the_nose_on_what_it_is_circling(drone):
+    """The behaviour this replaced pointed the camera at everything except the subject.
+
+    orbit masks yaw off in the position target, so ArduPilot picks the heading, and its pick
+    is the velocity vector - i.e. tangential to the circle - frozen at every vertex where the
+    vehicle slows below 5 percent of WPNAV_SPEED. point_camera sets pitch only, so the camera
+    azimuth is the airframe's: a tangential nose cannot hold the thing being inspected.
+
+    Sampled mid-orbit rather than after, because after is exactly when it looked fine.
+    """
+    from mavlink_mcp import geo
+
+    centre = _pos(drone.call("get_status"))
+    probe, out = drone.probe_during("orbit", {"radius_m": 15}, "get_status", {}, after_s=30.0)
+    assert "flew a 15 m circle" in out
+
+    here = _pos(probe)
+    if geo.distance_m(here[0], here[1], centre[0], centre[1]) < 5.0:
+        pytest.skip("probe landed while the vehicle was still near the centre")
+    want = geo.bearing_deg(here[0], here[1], centre[0], centre[1])
+    off = abs((_heading(probe) - want + 180.0) % 360.0 - 180.0)
+    # Half a leg is 15 degrees; the slack is the vehicle slewing toward each new target.
+    assert off < 50.0, f"nose was {off:.0f} deg off the centre mid-orbit ({probe})"
+
+
+def test_orbit_ends_over_its_centre(drone):
+    # It used to stop on the rim, radius_m due north, so every call quietly moved the vehicle.
+    from mavlink_mcp import geo
+    before = _pos(drone.call("get_status"))
+    assert "back over the middle" in drone.call("orbit", radius_m=12)
+    after = _pos(drone.call("get_status"))
+    assert geo.distance_m(before[0], before[1], after[0], after[1]) < 5.0
+
+
+def test_orbit_refuses_a_circle_inside_its_own_arrival_tolerance(drone):
+    # Below ~1.4 m every leg is shorter than ARRIVE_RADIUS_M, so the old code walked all 13
+    # points instantly and reported a circle it had not flown.
+    out = drone.call("orbit", radius_m=1.2)
+    assert out.startswith("failed:") and "arrival tolerance" in out
 
 
 def test_goto_returns_to_the_start(drone):

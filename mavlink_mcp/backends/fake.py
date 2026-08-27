@@ -37,6 +37,9 @@ class FakeBackend(RobotBackend):
         self._params = {"FENCE_RADIUS": 150.0, "LOIT_SPEED_MS": 15.0, "WP_SPD": 10.0}
         self.gimbal_pitch_deg = 0.0
         self.gimbal_yaw_deg = 0.0
+        self.roi = None            # (lat, lon) the nose is pinned to, or None
+        self.roi_history: list = []  # every set/clear in order, so a test can see it was cleared
+        self.goto_yaws: list = []  # yaw_deg passed with each goto, None when unspecified
 
     def connect(self, uri: str, timeout_s: float = 30.0) -> CommandResult:
         self._connected = True
@@ -134,7 +137,17 @@ class FakeBackend(RobotBackend):
             if self._home_lat is not None:
                 self._tel.lat_deg, self._tel.lon_deg = self._home_lat, self._home_lon
             return CommandResult.success("returning to launch")
+        if name == "set_roi":
+            lat = primitive.params.get("latitude")
+            self.roi = None if lat is None else (float(lat),
+                                                 float(primitive.params["longitude"]))
+            self.roi_history.append(self.roi)
+            return CommandResult.success("roi cleared" if lat is None else "roi set")
         if name == "goto":
+            yaw = primitive.params.get("yaw_deg")
+            self.goto_yaws.append(None if yaw is None else float(yaw))
+            if yaw is not None:
+                self._tel.heading_deg = float(yaw) % 360.0
             self._tel.lat_deg, self._tel.lon_deg = self._fence_clamp(
                 float(primitive.params["latitude"]), float(primitive.params["longitude"]))
             alt = primitive.params.get("altitude_m")

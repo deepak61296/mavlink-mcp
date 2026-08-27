@@ -138,6 +138,86 @@ def test_orbit_radius_clamped():
     assert "flew a 100 m circle" in out
 
 
+def _flying(**kw):
+    """A session plus the backend under it, taken off, so orbit can be inspected."""
+    backend = FakeBackend()
+    s = VehicleSession(Settings(backend="fake", enable_actuation=True, **kw), backend)
+    s.run_flight_tool("takeoff", {"altitude_m": 12})
+    return s, backend
+
+
+def test_orbit_holds_the_nose_on_what_it_is_circling():
+    """The defect this replaced: yaw was masked off, so ArduPilot tracked the velocity vector.
+
+    That points the aircraft ALONG the circle rather than at its middle, and since
+    point_camera only sets pitch, the camera azimuth is the airframe's. Orbiting a structure
+    could not keep the structure in frame.
+    """
+    from mavlink_mcp import geo
+    from mavlink_mcp.flight import _orbit_vertices
+
+    s, backend = _flying()
+    before = backend.get_telemetry()
+    clat, clon = before.lat_deg, before.lon_deg
+    radius = 15.0
+    assert "flew a 15 m circle" in s.run_flight_tool("orbit", {"radius_m": radius})
+
+    n = _orbit_vertices(radius)
+    yaws = backend.goto_yaws
+    assert len(yaws) == n + 2, "one leg out, n around, one back to the middle"
+    assert yaws[0] is None, "flying out to the rim should not be done backwards"
+    assert yaws[-1] is None, "the leg home already points at the centre"
+
+    ring = geo.circle_points(clat, clon, radius, n=n)[1:] + [geo.circle_points(clat, clon, radius, n=n)[0]]
+    for yaw, (plat, plon) in zip(yaws[1:-1], ring):
+        assert yaw is not None
+        want = geo.bearing_deg(plat, plon, clat, clon)
+        off = abs((yaw - want + 180.0) % 360.0 - 180.0)
+        # Worst case is exactly at a vertex, and it is half a leg: the yaw is taken from the
+        # midpoint of the chord, so the bearing back to the centre is off by 180/n at each end.
+        # The slack is the equirectangular projection, not the geometry.
+        assert off <= 180.0 / n + 0.05, f"nose {off:.1f} deg off the centre"
+
+
+def test_orbit_clears_the_roi_it_set():
+    # An ROI outlives the tool that set it: leave one behind and every later goto, RTL
+    # included, flies with the nose pinned to a place nobody asked about.
+    s, backend = _flying()
+    s.run_flight_tool("orbit", {"radius_m": 15})
+    assert any(r is not None for r in backend.roi_history), "never aimed at the centre"
+    assert backend.roi_history[-1] is None and backend.roi is None, "ROI left set"
+
+
+def test_orbit_ends_over_the_centre_not_on_the_rim():
+    from mavlink_mcp import geo
+    s, backend = _flying()
+    before = backend.get_telemetry()
+    s.run_flight_tool("orbit", {"radius_m": 20})
+    after = backend.get_telemetry()
+    # It used to finish on the rim, radius_m due north, so "circle around here" moved the
+    # vehicle 20 m every time it was called.
+    assert geo.distance_m(before.lat_deg, before.lon_deg, after.lat_deg, after.lon_deg) < 1.0
+
+
+def test_orbit_refuses_a_circle_smaller_than_its_own_arrival_tolerance():
+    s, _ = _flying()
+    out = s.run_flight_tool("orbit", {"radius_m": 1.2})
+    assert out.startswith("failed:")
+    assert "arrival tolerance" in out and "without the vehicle moving" in out
+
+
+def test_orbit_vertices_keep_every_leg_longer_than_the_arrival_test():
+    import math
+    from mavlink_mcp.flight import ARRIVE_RADIUS_M, MIN_ORBIT_RADIUS_M, _orbit_vertices
+    r = MIN_ORBIT_RADIUS_M + 0.1
+    while r < 120:
+        n = _orbit_vertices(r)
+        assert 3 <= n <= 12
+        chord = 2 * r * math.sin(math.pi / n)
+        assert chord > ARRIVE_RADIUS_M, f"r={r:.1f} n={n} chord={chord:.1f} is swallowed whole"
+        r *= 1.15
+
+
 def test_takeoff_clamped_to_configured_limit():
     from mavlink_mcp.safety import SafetyLimits
     settings = Settings(backend="fake", enable_actuation=True,

@@ -542,6 +542,24 @@ class MavlinkBackend(RobotBackend):
             self._conn.target_system, self._conn.target_component,
             command, 0, *args[:7],
         )
+        return self._await_ack(command, timeout)
+
+    def _run_cmd_int(self, command: int, frame: int, p1: float, p2: float, p3: float,
+                     p4: float, x: int, y: int, z: float,
+                     timeout: float = 5.0) -> CommandResult:
+        """Send COMMAND_INT and wait for the ACK. Owner-thread only.
+
+        COMMAND_LONG carries lat/lon in param5/param6, which are float32: that quantises a
+        latitude to roughly a metre, and a region of interest that wanders by a metre is not
+        one. COMMAND_INT carries them as int32 scaled by 1e7 instead.
+        """
+        self._conn.mav.command_int_send(
+            self._conn.target_system, self._conn.target_component,
+            frame, command, 0, 0, p1, p2, p3, p4, int(x), int(y), float(z),
+        )
+        return self._await_ack(command, timeout)
+
+    def _await_ack(self, command: int, timeout: float) -> CommandResult:
         start = time.time()
         deadline = start + timeout
         # IN_PROGRESS extends the wait, but only up to a hard cap: this loop runs on the one
@@ -628,20 +646,45 @@ class MavlinkBackend(RobotBackend):
                 note += f" (alt capped to {alt_cap:.0f} m fence)"
         return lat, lon, alt_m, note
 
-    def _do_goto(self, lat: float, lon: float, alt_rel_m) -> CommandResult:
+    def _do_goto(self, lat: float, lon: float, alt_rel_m,
+                 yaw_deg: Optional[float] = None) -> CommandResult:
         tel = self.get_telemetry()
         target_alt = float(alt_rel_m) if alt_rel_m is not None else (tel.alt_rel_m or 10.0)
         lat, lon, target_alt, note = self._clamp_to_fence(lat, lon, target_alt)
         # type_mask 0xFF8: use position only (ignore velocity, acceleration, yaw, yaw rate).
+        # Clearing bit 10 turns the yaw field on. Left masked, ArduPilot picks the heading
+        # itself, and its pick is the velocity vector - frozen whenever desired speed drops
+        # under 5 percent of WPNAV_SPEED. A vehicle flown waypoint to waypoint crosses that
+        # threshold at every one of them, so the nose ends up tangential and snapping.
+        mask = 0b0000111111111000
+        yaw_rad = 0.0
+        if yaw_deg is not None:
+            mask &= ~(1 << 10)
+            yaw_rad = math.radians(float(yaw_deg) % 360.0)
         self._conn.mav.set_position_target_global_int_send(
             0, self._conn.target_system, self._conn.target_component,
             mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-            0b0000111111111000,
+            mask,
             int(lat * 1e7), int(lon * 1e7), target_alt,
-            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, yaw_rad, 0,
         )
         return CommandResult.success("goto sent" + note, target_lat=lat, target_lon=lon,
                                      target_alt_m=target_alt)
+
+    def _do_set_roi(self, lat: float, lon: float, alt_m: float) -> CommandResult:
+        """Lock the nose, and any mount the autopilot drives, onto one fixed location."""
+        return self._run_cmd_int(
+            mavutil.mavlink.MAV_CMD_DO_SET_ROI_LOCATION,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            0.0, 0.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt_m))
+
+    def _do_clear_roi(self) -> CommandResult:
+        """Hand the heading back to the autopilot's default.
+
+        Worth being religious about: an ROI left set outlives the tool that set it, and every
+        later goto, RTL included, would fly with the nose pinned to a place nobody asked about.
+        """
+        return self._run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_ROI_NONE)
 
     def _do_move(self, direction: str, distance_m: float) -> CommandResult:
         tel = self.get_telemetry()
@@ -741,9 +784,18 @@ class MavlinkBackend(RobotBackend):
         if name == "rtl":
             return self.set_mode("RTL")
         if name == "goto":
+            yaw = primitive.params.get("yaw_deg")
             return self._call(lambda: self._do_goto(
                 float(primitive.params["latitude"]), float(primitive.params["longitude"]),
-                primitive.params.get("altitude_m")), timeout=8)
+                primitive.params.get("altitude_m"),
+                None if yaw is None else float(yaw)), timeout=8)
+        if name == "set_roi":
+            lat = primitive.params.get("latitude")
+            if lat is None:
+                return self._call(self._do_clear_roi, timeout=8)
+            return self._call(lambda: self._do_set_roi(
+                float(lat), float(primitive.params["longitude"]),
+                float(primitive.params.get("altitude_m") or 0.0)), timeout=8)
         if name == "move":
             return self._call(lambda: self._do_move(
                 str(primitive.params["direction"]), float(primitive.params["distance_m"])), timeout=8)

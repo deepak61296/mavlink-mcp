@@ -45,6 +45,12 @@ def ne_between(lat0: float, lon0: float, lat1: float, lon1: float) -> tuple[floa
     return north, east
 
 
+def bearing_deg(lat0: float, lon0: float, lat1: float, lon1: float) -> float:
+    """Compass bearing from point 0 to point 1, degrees clockwise from north."""
+    north, east = ne_between(lat0, lon0, lat1, lon1)
+    return math.degrees(math.atan2(east, north)) % 360.0
+
+
 def clamp_to_circle(home_lat: float, home_lon: float, lat: float, lon: float,
                     max_radius_m: float) -> tuple[float, float]:
     """Pull (lat, lon) back onto a circle of max_radius_m around home, along the same bearing."""
@@ -93,6 +99,10 @@ def circle_points(clat: float, clon: float, radius_m: float, n: int = 12,
 
     Used to fly an orbit as GUIDED waypoints (which hold altitude), rather than ArduPilot's
     CIRCLE mode, which expects pilot throttle for altitude and sinks under MAVLink-only control.
+
+    n is a knob rather than a constant because the chord between vertices is 2*r*sin(pi/n),
+    and a chord shorter than the caller's arrival tolerance makes every leg report arrival
+    without the vehicle moving. See flight._orbit_vertices.
     """
     pts = []
     step = 360.0 / max(3, n)

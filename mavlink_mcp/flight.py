@@ -7,6 +7,7 @@ Tool names/params follow the old backend's vocabulary.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Callable, Optional
@@ -29,6 +30,20 @@ ALT_TOLERANCE_M = 3.0
 # happened. Wait out those seconds so the number handed back is the one the vehicle keeps.
 SETTLE_TOLERANCE_M = 0.5
 SETTLE_WAIT_S = 6.0
+# An orbit is flown as a polygon, and its legs have to outrun the arrival test. The chord
+# between vertices is 2*r*sin(pi/n), so at the old fixed n=12 anything under 4.8 m produced
+# legs shorter than ARRIVE_RADIUS_M: every goto reported "arrived" the instant it was sent and
+# the tool walked the whole circle while the aircraft sat still, reporting success.
+MIN_ORBIT_LEG_M = 3.0 * ARRIVE_RADIUS_M
+# The coarsest circle worth flying is a triangle. Below the radius whose triangle leg still
+# clears the arrival radius, there is no n that works and the orbit is refused instead.
+MIN_ORBIT_RADIUS_M = ARRIVE_RADIUS_M / (2.0 * math.sin(math.pi / 3.0))
+
+
+def _orbit_vertices(radius_m: float) -> int:
+    """Most vertices that still leave every leg longer than the arrival test can swallow."""
+    ratio = min(1.0, MIN_ORBIT_LEG_M / (2.0 * max(radius_m, 0.01)))
+    return max(3, min(12, int(math.pi / math.asin(ratio))))
 
 
 def _span(metres: float) -> str:
@@ -284,11 +299,14 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
         return f"arrived at {target_name}{tail}"
 
     def _goto_and_wait(target_name: str, primitive: Primitive,
-                       want: Optional[tuple] = None) -> CommandResult:
+                       want: Optional[tuple] = None,
+                       after_send: Optional[Callable[[], None]] = None) -> CommandResult:
         before = backend.get_telemetry()
         res = backend.execute_primitive(primitive)
         if not res.ok:
             return res
+        if after_send is not None:
+            after_send()
         tlat, tlon = res.detail.get("target_lat"), res.detail.get("target_lon")
         if tlat is None or tlon is None:
             return res
@@ -362,6 +380,27 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             "altitude_m": float(p["altitude_m"])}))
 
     def orbit(p: dict) -> CommandResult:
+        """Fly a circle around where the vehicle is now, with the nose on the middle of it.
+
+        Two things here are not obvious and both were bugs.
+
+        The nose. A GUIDED position target with the yaw bit masked makes ArduPilot choose the
+        heading, and it chooses the velocity vector, freezing it whenever desired speed falls
+        under 5 percent of WPNAV_SPEED. Flown as waypoints that happens at every vertex, so
+        the aircraft used to circle a structure with its nose tangential to the circle,
+        snapping round at each corner - and since point_camera only sets pitch, the camera
+        azimuth IS the nose. Orbiting a tower could not keep the tower in frame.
+
+        So each leg now carries a yaw target, and an ROI is re-asserted behind it. The ROI
+        alone is not enough: every position target with yaw masked calls
+        set_yaw_state_rad -> auto_yaw.set_mode_to_default, which drops an ROI set before the
+        loop. Sent after the target it survives to the next one, and where the autopilot
+        supports it the ROI upgrades the fixed per-leg yaw to continuous tracking and points
+        a mount too.
+
+        The ending. It used to stop on the rim, radius_m due north of where it started, so
+        "circle around here" quietly moved the vehicle every time it was called.
+        """
         radius, note = clamp_noted(float(p["radius_m"]), lim.min_orbit_radius_m,
                                    lim.max_orbit_radius_m, "radius",
                                    "the configured max_orbit_radius_m")
@@ -371,20 +410,59 @@ def build_flight_tools(backend: RobotBackend, limits: Optional[SafetyLimits] = N
             return CommandResult.failure("not airborne - take off before orbiting")
         if tel.lat_deg is None or tel.lon_deg is None:
             return CommandResult.failure("no position fix for orbit")
+        if radius <= MIN_ORBIT_RADIUS_M:
+            return CommandResult.failure(
+                f"a {radius:.1f} m radius is inside the {ARRIVE_RADIUS_M:.1f} m arrival "
+                f"tolerance, so every leg would report arrival without the vehicle moving; "
+                f"use at least {MIN_ORBIT_RADIUS_M + 1:.0f} m")
         if backend.get_telemetry().mode != "GUIDED":
             backend.set_mode("GUIDED")
-        alt = tel.alt_rel_m
-        pts = geo.circle_points(tel.lat_deg, tel.lon_deg, radius, n=12, clockwise=cw)
-        for i, (plat, plon) in enumerate(pts + [pts[0]]):  # close the loop back to the start
-            if interrupt is not None and interrupt.is_set():
-                return CommandResult.failure("orbit interrupted")
-            res = _goto_and_wait(f"orbit {i}/{len(pts)}",
-                                 Primitive("goto", {"latitude": plat, "longitude": plon,
-                                                    "altitude_m": alt}))
-            if not res.ok:
-                return CommandResult.failure(f"orbit stopped at point {i}: {res.message}")
+        clat, clon, alt = tel.lat_deg, tel.lon_deg, tel.alt_rel_m
+        n = _orbit_vertices(radius)
+        pts = geo.circle_points(clat, clon, radius, n=n, clockwise=cw)
+
+        def aim_at_centre() -> None:
+            backend.execute_primitive(Primitive("set_roi", {
+                "latitude": clat, "longitude": clon, "altitude_m": alt}))
+
+        def leg_yaw(a: tuple, b: tuple) -> float:
+            """Face the middle of the leg, not its end.
+
+            The bearing back to the centre sweeps a full 360/n while the vehicle flies one
+            chord. Aiming from the midpoint halves the worst-case error, to 180/n.
+            """
+            return geo.bearing_deg((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, clat, clon)
+
+        try:
+            # Out to the rim first, nose free: pinning it to the centre here would fly the
+            # whole radius backwards.
+            out = _goto_and_wait("the rim", Primitive("goto", {
+                "latitude": pts[0][0], "longitude": pts[0][1], "altitude_m": alt}))
+            if not out.ok:
+                return CommandResult.failure(f"orbit could not reach its start: {out.message}")
+            ring = pts[1:] + [pts[0]]
+            for i, (plat, plon) in enumerate(ring, start=1):
+                if interrupt is not None and interrupt.is_set():
+                    return CommandResult.failure("orbit interrupted")
+                res = _goto_and_wait(
+                    f"orbit {i}/{n}",
+                    Primitive("goto", {"latitude": plat, "longitude": plon, "altitude_m": alt,
+                                       "yaw_deg": leg_yaw(pts[i - 1], (plat, plon))}),
+                    after_send=aim_at_centre)
+                if not res.ok:
+                    return CommandResult.failure(f"orbit stopped at point {i}: {res.message}")
+        finally:
+            backend.execute_primitive(Primitive("set_roi", {}))
+        # Nose is free again, and the leg home points at the centre anyway.
+        back = _goto_and_wait("the orbit centre", Primitive("goto", {
+            "latitude": clat, "longitude": clon, "altitude_m": alt}))
+        if not back.ok:
+            return CommandResult.failure(
+                f"flew the circle but did not get back to the centre: {back.message}")
         turn = "clockwise" if cw else "counter-clockwise"
-        return CommandResult.success(f"flew a {radius:.0f} m circle ({turn}){note}")
+        return CommandResult.success(
+            f"flew a {radius:.0f} m circle ({turn}) with the camera on the centre, "
+            f"back over the middle{note}")
 
     return {
         "get_status": get_status, "check_armable": check_armable, "set_mode": set_mode,
