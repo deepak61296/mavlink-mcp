@@ -11,20 +11,20 @@ Claude Code / Codex → flying SITL.
 
 ## What it looks like
 
-One prompt, a full surveillance sweep: take off, fly a box photographing every corner, orbit a
-structure, climb for a wide shot, come home and land.
+One prompt, a whole sortie. It arms, takes off, flies the route, photographs what you asked it to
+photograph, and brings the aircraft home, speaking MAVLink to ArduPilot the whole way.
 
-![A drone flying a surveillance sweep in Gazebo while the agent narrates it](docs/media/flight.gif)
+![A drone flying over a simulated town in Gazebo](docs/media/flight.gif)
 
-You ask in plain English, and it plans the whole mission before it moves:
+You ask in plain English, and it works the mission out before it moves:
 
-![The mission given to the agent as a single plain-English paragraph](docs/media/prompt.gif)
+![The surveillance mission given as one plain-English paragraph, and the plan the agent replies with](docs/media/plan.gif)
 
-Then it flies, and tells you what it actually sees rather than what it was told to expect:
+When it is back on the ground it tells you what it actually did, not what it was told to do:
 
-![The agent calling mavlink-mcp and describing each photographed corner](docs/media/tool-calls.gif)
+![The agent reporting the finished mission, landed and disarmed back at home](docs/media/report.gif)
 
-And when you ask it to switch your geofence off, it will not:
+And when you tell it to switch your geofence off, it will not:
 
 ![The agent refusing to disable the geofence and explaining why](docs/media/refusal.gif)
 
