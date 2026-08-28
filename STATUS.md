@@ -97,6 +97,20 @@ a packaging break shows up before a release, not during one.
 - ArduPilot SITL serves ONE MAVLink client on its TCP port. A second connection is accepted
   and then never gets a heartbeat, so a stray MAVProxy makes the vehicle look dead.
 
+## 0.1.6
+- **Orbit points the aircraft at what it is circling.** The old orbit flew its polygon with
+  `WP_YAW_BEHAVIOR` left in charge, so the nose chased the next vertex, and below 5 % of
+  `WPNAV_SPEED` ArduPilot freezes yaw entirely: near every vertex the aircraft stopped
+  turning, then snapped. On camera it read as a drunk pirouette. The orbit now sets an ROI at
+  the centre for the whole circle, backs it with an explicit per-leg yaw, and clears the ROI
+  when done so later commands are not stuck aiming at an old target. Verified on SITL by
+  sampling yaw mid-orbit: the nose stays on the centre the whole way round.
+- **Orbit ends over its centre, not on the rim.** It used to finish wherever the last vertex
+  fell, which surprised every model that then asked for its position.
+- **Orbit refuses a circle smaller than its own arrival tolerance** instead of flying a
+  shape the arrival test would swallow whole, and the vertex count now adapts to the radius
+  so every leg stays longer than that tolerance (3 to 12 vertices).
+
 ## 0.1.5
 - **Altitude reports wait for the vehicle to settle.** The arrival band is 3 m wide, so a
   climb crosses it while still moving: `set_altitude` to 30 m returned with the vehicle at
