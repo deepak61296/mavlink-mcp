@@ -4,10 +4,10 @@ An MCP server for MAVLink drones. It lets an LLM agent (Claude, Codex, or anythi
 MCP) fly an ArduPilot vehicle and see through its camera. Works against ArduPilot SITL, so you can
 try it with no hardware.
 
-Drones are dangerous — flight tools are **off by default**. Read [Safety](#safety) first.
+Drones are dangerous, so flight tools are **off by default**. Read [Safety](#safety) first.
 
-New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks a fresh machine through install →
-Claude Code / Codex → flying SITL.
+New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks a fresh machine from install to a
+first SITL flight, with Claude Code or Codex.
 
 ## What it looks like
 
@@ -35,15 +35,15 @@ server with `--allow-unsafe-params`.
 
 ## Status
 
-**Solid in simulation (beta)** — covered by the unit suite and flown by `pytest -m sitl` against
+**Solid in simulation (beta):** covered by the unit suite and flown by `pytest -m sitl` against
 ArduPilot SITL: the read-only tools, `arm`/`disarm`/`takeoff`/`land`/`rtl`/`goto`/`move`/`orbit`/
 `wait`, `set_param` with the safety guards, the geofence + GCS-heartbeat failsafe. The Gazebo
 camera path is exercised manually (see below), not by the SITL suite.
 
-**Working, less battle-tested** — the HTTP transport, `--camera` over `rtsp://`/`udp://`, the pi
+**Working, less battle-tested:** the HTTP transport, `--camera` over `rtsp://`/`udp://`, the pi
 bridge. Not yet flown on real hardware.
 
-**Planned** — a PX4 backend (MAVSDK): PX4 is detected from its heartbeat today, but flight is
+**Planned:** a PX4 backend via MAVSDK. PX4 is detected from its heartbeat today, but flight is
 refused until the backend lands. See
 [STATUS.md](https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md).
 
@@ -52,7 +52,7 @@ refused until the backend lands. See
 Needs **Python 3.10+**. To actually fly you also need **ArduPilot SITL** built (ArduPilot's
 [SITL on Linux](https://ardupilot.org/dev/docs/setting-up-sitl-on-linux.html) guide); the optional
 Gazebo camera needs Gazebo Harmonic + the [world](#with-a-camera-in-gazebo). The server itself
-starts without either — the link opens lazily on the first tool call.
+starts without either; the link opens lazily on the first tool call.
 
 Either install puts the `mavlink-mcp` command on your PATH, which is what the MCP client
 configs below call:
@@ -81,16 +81,16 @@ cd ~/ardupilot
 python3 Tools/autotest/sim_vehicle.py -v ArduCopter --no-mavproxy -I0
 ```
 
-Wire it into your MCP client. **Claude Code** — add it with one command:
+Wire it into your MCP client. For **Claude Code** it is one command:
 
 ```bash
 claude mcp add --transport stdio drone -- mavlink-mcp --enable-actuation
 claude mcp list          # check it's registered;  /mcp inside Claude Code shows it connected
 ```
 
-`--` is required — it stops Claude parsing `--enable-actuation` as its own flag. Default scope is
+The `--` is required; it stops Claude parsing `--enable-actuation` as its own flag. Default scope is
 local (this project only); `--scope project` writes a shared `.mcp.json` instead. Or configure it by
-hand — `.mcp.json` in the project root (Claude Desktop uses the same shape):
+hand with `.mcp.json` in the project root (Claude Desktop uses the same shape):
 
 ```json
 {
@@ -123,7 +123,7 @@ moving an aircraft: the read-only tools declare `readOnlyHint` and get auto-appr
 flight tools declare `destructiveHint` and prompt.
 
 Argument limits travel in the tool schema, so a client rejects an impossible request before
-it reaches an aircraft — `takeoff(altitude_m=-20)` comes back as a validation error, not as
+it reaches an aircraft: `takeoff(altitude_m=-20)` comes back as a validation error, not as
 a clamped flight. The bounds come from your config, so the model sees the envelope it is
 actually flying in.
 
@@ -133,8 +133,8 @@ No SITL? `mavlink-mcp --backend fake --enable-actuation` runs an in-memory drone
 
 ## With a camera, in Gazebo
 
-For a drone that can actually see something, there is a Gazebo field — roads, cars,
-buildings, markers — in [ardupilot_gazebo_ai](https://github.com/deepak61296/ardupilot_gazebo_ai):
+For a drone that can actually see something, there is a Gazebo field (roads, cars,
+buildings, markers) in [ardupilot_gazebo_ai](https://github.com/deepak61296/ardupilot_gazebo_ai):
 
 ```bash
 git clone git@github.com:deepak61296/ardupilot_gazebo_ai.git
@@ -155,7 +155,7 @@ back a picture of the field.
 Nothing here has been flown on hardware yet, so treat this as the configuration you would
 start from rather than a tested recipe.
 
-Two things change from SITL, and they are configured independently — the autopilot link and
+Two things change from SITL, and they are configured independently. The autopilot link and
 the camera are separate streams that happen to come off the same aircraft:
 
 ```bash
@@ -165,21 +165,21 @@ mavlink-mcp \
   --enable-actuation --allow-real-vehicle
 ```
 
-- **`--conn`** — `serial:/dev/ttyACM0:57600` for a USB/telemetry radio, or `udp:...` if a
+- **`--conn`**: `serial:/dev/ttyACM0:57600` for a USB/telemetry radio, or `udp:...` if a
   router is already fanning the link out. If a GCS is also connected, read
   [Running alongside a GCS](#running-alongside-a-gcs) first: one MAVLink endpoint serves one
   client.
-- **`--camera`** — your camera's own RTSP URL, which the operator has to supply; the server
+- **`--camera`**: your camera's own RTSP URL, which the operator has to supply; the server
   has no way to discover it. Unlike `--camera gazebo`, RTSP is read through OpenCV's FFMPEG
-  backend, so the plain `pip install ".[camera]"` wheel is enough — no GStreamer build
+  backend, so the plain `pip install ".[camera]"` wheel is enough, no GStreamer build
   needed. Try `--camera file:<some.jpg>` first to confirm your client renders images at all.
-- **`--allow-real-vehicle`** — required. Actuation is refused on anything that does not
+- **`--allow-real-vehicle`**: required. Actuation is refused on anything that does not
   identify itself as a simulator (see [Safety](#safety)), and the connection string is never
   what decides that.
 
 ## Running alongside a GCS
 
-The server owns the link. ArduPilot SITL — and a typical serial flight controller — serve a
+The server owns the link. ArduPilot SITL, like a typical serial flight controller, serves a
 **single** MAVLink client, so you can't point `mavlink-mcp` and a ground station at the same
 endpoint; the second one connects but never sees a heartbeat. To run both, fan the stream out with
 [mavlink-router](https://github.com/mavlink-router/mavlink-router) (or mavproxy) and give each
@@ -199,8 +199,8 @@ Read-only (always on): `get_status`, `describe_vehicle`, `check_armable`, `get_p
 
 The server also finds out what it's talking to on its own: `describe_vehicle` reports the
 autopilot and firmware version (from `AUTOPILOT_VERSION`), the vehicle type from the
-heartbeat, sensor health from `SYS_STATUS`, the fence, and the protocol capabilities —
-all read from the vehicle, not from configuration. The same info is published as MCP
+heartbeat, sensor health from `SYS_STATUS`, the fence, and the protocol capabilities,
+all read from the vehicle rather than from configuration. The same info is published as MCP
 resources (`mavlink://vehicle`, `mavlink://telemetry`) for clients that read those.
 
 Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `goto`, `move`,
@@ -210,17 +210,17 @@ Flight (need `--enable-actuation`): `arm`, `disarm`, `takeoff`, `land`, `rtl`, `
   plus a distance. Blocks until it arrives.
 - `orbit` flies one full circle of a given radius around the current position, holding altitude.
 - `takeoff`/`goto`/`move`/`orbit`/`land`/`rtl` all block until the vehicle actually gets
-  there — `rtl` returns once it is down and disarmed, not when the mode switches — and every
+  there; `rtl` returns once it is down and disarmed, not when the mode switches. Every
   reply ends with a `[state: alt X m, MODE, armed]` line read from live telemetry.
-- `emergency_stop` interrupts a running flight command — the blocking tool unwinds immediately —
-  then commands RTL. The RTL itself may wait behind at most one in-flight MAVLink exchange
+- `emergency_stop` interrupts a running flight command (the blocking tool unwinds
+  immediately) and then commands RTL. The RTL itself may wait behind at most one in-flight MAVLink exchange
   (each is hard-bounded at a few seconds).
 - Flight commands run off the event loop, so `get_status` and `emergency_stop` still answer
   immediately while the vehicle is in the middle of a long move.
 - `capture_camera` returns the frame as an MCP image, so a multimodal model can look at it. Point
   `--camera` at `gazebo`, an `rtsp://` URL, or `file:<path>`. `file:` is handy for a first
   test: point it at any JPEG and check your client actually renders what the drone "sees".
-  Every other tool returns text, so the flight and telemetry tools work with any model — only
+  Every other tool returns text, so the flight and telemetry tools work with any model; only
   `capture_camera` needs a multimodal client (Claude, Codex).
 
 Note on `--camera gazebo`: that stream is H.264 over UDP, which OpenCV can only read
@@ -231,23 +231,23 @@ work fine with the wheel.
 ## Safety
 
 - Actuation is off unless you pass `--enable-actuation`. Without it, only the read-only tools
-  exist — and a read-only server **never writes to the flight controller**, not even failsafe
+  exist, and a read-only server **never writes to the flight controller**, not even failsafe
   setup: connecting and reading status leaves the vehicle's configuration untouched.
 - Even then, flying needs the vehicle to prove it is a simulator: ArduPilot SITL streams a
-  `SIMSTATE` message, real firmware never does. No `SIMSTATE` — including a real FC routed to
-  `127.0.0.1` by mavlink-router — means every flight tool (`emergency_stop` included) is refused
+  `SIMSTATE` message, real firmware never does. No `SIMSTATE`, even from a real FC that mavlink-router happens to route to
+  `127.0.0.1`, means every flight tool (`emergency_stop` included) is refused
   until you pass `--allow-real-vehicle`. The connection string is never trusted for this.
 - Flight tools are refused on anything that isn't a multirotor (a Plane or Rover heartbeat gets
   telemetry tools only), and on PX4 until its backend exists.
-- `set_param` refuses writes to the safety-net parameter families at **any** value — `FENCE_*`,
-  `FS_*`, `ARMING_*`, battery failsafes, `FORMAT_VERSION`, `SYSID_*` — not just "off" values,
+- `set_param` refuses writes to the safety-net parameter families at **any** value (`FENCE_*`,
+  `FS_*`, `ARMING_*`, battery failsafes, `FORMAT_VERSION`, `SYSID_*`), not just "off" values,
   because a fence is weakened as easily by raising `FENCE_RADIUS` as by zeroing `FENCE_ENABLE`.
   Opt out with `--allow-unsafe-params`.
 - Altitude is clamped to a limit and to the vehicle's fence; horizontal targets are pulled back
   inside the geofence. `get_status` reports whether the horizontal clamp is actually active
   (it needs a home fix and a readable fence radius) instead of failing silently.
-- No disarm while airborne, no takeoff while flying, no move/goto before armed and airborne —
-  and when altitude is unknown (position stream lost), these checks fail **closed**, not open.
+- No disarm while airborne, no takeoff while flying, no move/goto before armed and airborne.
+  When altitude is unknown because the position stream is lost, these checks fail **closed**.
 - With actuation enabled, the server enables the FC geofence and a GCS-heartbeat failsafe, so
   the vehicle returns to launch on its own if the agent or link dies. `describe_vehicle` lists
   exactly which parameters were written at connect.
@@ -268,16 +268,16 @@ None of this replaces a human with a kill switch on a real flight.
 | `--backend` | `MAVLINK_MCP_BACKEND` | `auto` | `auto` (detect from heartbeat), `ardupilot`, `fake` |
 | `--config` | `MAVLINK_MCP_CONFIG` | none | TOML config file, see below |
 | `--transport` | | `stdio` | `stdio` or `http` |
-| `--host` | | `127.0.0.1` | bind address for `--transport http`. **No auth exists on the HTTP transport**, so a non-loopback bind is refused at startup — front it with an authenticating proxy instead |
+| `--host` | | `127.0.0.1` | bind address for `--transport http`. **No auth exists on the HTTP transport**, so a non-loopback bind is refused at startup; front it with an authenticating proxy instead |
 | `--port` | | `8000` | port for `--transport http` |
 
 The link opens lazily on the first tool call, so the server starts fine before SITL is up.
 
-Instead of flags you can keep everything in one TOML file — handy when the MCP client
-entry should stay short, and the only place to tune the safety limits:
+Instead of flags you can keep everything in one TOML file. It keeps the MCP client
+entry short, and it is the only place to tune the safety limits:
 
 ```toml
-# drone.toml — run with: mavlink-mcp --config drone.toml
+# drone.toml. Run with: mavlink-mcp --config drone.toml
 [connection]
 uri = "tcp:127.0.0.1:5760"
 
@@ -297,7 +297,7 @@ Flags and env vars override the file.
 The default backend is `auto`: the server reads the autopilot type from the first heartbeat.
 ArduPilot works today and is what the test suite flies. PX4 is recognised from its heartbeat
 and flight is refused on it until the PX4 backend (MAVSDK) lands; the read-only tools are
-plain MAVLink and should work, but nothing here has been run against PX4 yet — see
+plain MAVLink and should work, but nothing here has been run against PX4 yet; see
 [STATUS.md](https://github.com/deepak61296/mavlink-mcp/blob/main/STATUS.md).
 
 `scripts/mission_demo.py` is a small example that drives the server over MCP and flies a mission.
