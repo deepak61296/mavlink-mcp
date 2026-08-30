@@ -11,6 +11,9 @@ first SITL flight, with Claude Code or Codex.
 
 ## What it looks like
 
+**[Watch the full demo on YouTube](https://www.youtube.com/watch?v=pyfqyfYUces)**: a mission
+flown from one prompt, a site survey, and an order it refuses.
+
 One prompt, a whole sortie. It arms, takes off, flies the route, photographs what you asked it to
 photograph, and brings the aircraft home, speaking MAVLink to ArduPilot the whole way.
 
