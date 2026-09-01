@@ -37,8 +37,8 @@ Where the project is and what's next. Kept short on purpose.
       rather than as a raw socket error
 - [x] arguments: nonsense is refused (negative altitude, latitude 91), over-limit is clamped
       *and said so*, and every bound is advertised in the tool schema
-- [x] actuation gate is loopback-only: `udpin:0.0.0.0` needs --allow-real-vehicle
-- [x] tests/sitl: 31 checks that fly a real SITL mission through the MCP protocol
+- [x] actuation gate is answered by the vehicle: it must stream SIMSTATE, or --allow-real-vehicle
+- [x] tests/sitl: 42 checks that fly a real SITL mission through the MCP protocol
 - [x] pi bridge extension (pi ships no MCP client of its own)
 
 - [x] safety-gate hardening pass (pre-release review, 2026-08): simulator status now proven
@@ -65,7 +65,7 @@ Where the project is and what's next. Kept short on purpose.
 
 ## Releasing
 
-Published: `pip install mavlink-mcp` installs 0.1.2 from PyPI and the console script runs
+Published: `pip install mavlink-mcp` installs 0.1.6 from PyPI and the console script runs
 from a clean virtualenv.
 
 ```bash

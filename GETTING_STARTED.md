@@ -26,7 +26,8 @@ pip install -e .
 which mavlink-mcp          # note this path -- you may need it in step 2
 ```
 
-Not on PyPI yet, so this is a source install. The `-e` puts a `mavlink-mcp` command on the venv's
+This is the source install, which is what you want if you plan to change the code;
+`pip install mavlink-mcp` works too. The `-e` puts a `mavlink-mcp` command on the venv's
 PATH; that command is what the client configs below launch.
 
 ## 2. Register it with your client
@@ -110,7 +111,7 @@ Any client that can talk to Ollama can fly through this server with no cloud at 
 end-to-end with gemma (an ~8B multimodal model) driving a full takeoff → move → wait → RTL
 mission. Two traps cost us an evening each, so they're documented here:
 
-1. **Bake a bigger context into a model tag.** This server's 18 tool schemas plus a typical
+1. **Bake a bigger context into a model tag.** This server's 19 tool schemas plus a typical
    client system prompt are ~10k tokens, but Ollama's OpenAI-compatible endpoint truncates
    silently at its 4096-token default AND ignores `num_ctx` sent in request bodies. The model
    then "never sees its tools" — symptoms are silent turns, invented tool names, or

@@ -15,26 +15,22 @@ first SITL flight, with Claude Code or Codex.
 flown from one prompt, a site survey, and an order it refuses.
 
 One prompt, a whole sortie. It arms, takes off, flies the route, photographs what you asked it to
-photograph, and brings the aircraft home, speaking MAVLink to ArduPilot the whole way.
+photograph, and brings the aircraft home, speaking MAVLink to ArduPilot the whole way. You ask in
+plain English, it works the mission out before it moves, and when it is back on the ground it
+tells you what it actually did rather than what it was told to do.
 
-![A drone flying over a simulated town in Gazebo](docs/media/flight.gif)
-
-You ask in plain English, and it works the mission out before it moves:
-
-![The surveillance mission given as one plain-English paragraph, and the plan the agent replies with](docs/media/plan.gif)
-
-When it is back on the ground it tells you what it actually did, not what it was told to do:
-
-![The agent reporting the finished mission, landed and disarmed back at home](docs/media/report.gif)
-
-And when you tell it to switch your geofence off, it will not:
-
-![The agent refusing to disable the geofence and explaining why](docs/media/refusal.gif)
+And when you tell it to switch your geofence off, it will not.
 
 That refusal is the point of the project. `set_param` hard-refuses every write to `FENCE_*`,
 raising or lowering, so a single chat message can never take a guardrail down. The two legitimate
 ways to change it both live outside the conversation: a real ground station, or restarting the
 server with `--allow-unsafe-params`.
+
+## Architecture
+
+![How mavlink-mcp is put together](docs/architecture.png)
+
+An editable copy lives at [docs/architecture.drawio](docs/architecture.drawio).
 
 ## Status
 
@@ -265,7 +261,7 @@ None of this replaces a human with a kill switch on a real flight.
 |------|-----|---------|---------|
 | `--conn` | `MAVLINK_MCP_CONN` | `tcp:127.0.0.1:5760` | MAVLink endpoint (SITL, `udp:...`, `serial:/dev/ttyACM0:57600`) |
 | `--enable-actuation` | | off | register the flight tools |
-| `--allow-real-vehicle` | | off | allow actuation on non-local connections |
+| `--allow-real-vehicle` | | off | allow actuation on a vehicle that has not proven it is a simulator |
 | `--allow-unsafe-params` | | off | let `set_param` disable fences/failsafes |
 | `--camera` | `MAVLINK_MCP_CAMERA` | none | `gazebo[:port]`, `rtsp://...`, `udp://...`, `file:<path>` |
 | `--backend` | `MAVLINK_MCP_BACKEND` | `auto` | `auto` (detect from heartbeat), `ardupilot`, `fake` |
