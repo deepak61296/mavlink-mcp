@@ -1,30 +1,26 @@
 # mavlink-mcp
 
-An MCP server for MAVLink drones. It lets an LLM agent (Claude, Codex, or anything that speaks
-MCP) fly an ArduPilot vehicle and see through its camera. Works against ArduPilot SITL, so you can
+An MCP server that lets an LLM agent fly an ArduPilot drone. Give Claude, Codex or any MCP
+client a task in plain English, and it plans the mission, flies it, looks through the drone's
+camera and decides what to do next, all over MAVLink. Works against ArduPilot SITL, so you can
 try it with no hardware.
-
-Drones are dangerous, so flight tools are **off by default**. Read [Safety](#safety) first.
 
 New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks a fresh machine from install to a
 first SITL flight, with Claude Code or Codex.
 
-## What it looks like
+## What it can do
 
-**[Watch the full demo on YouTube](https://www.youtube.com/watch?v=pyfqyfYUces)**: a mission
-flown from one prompt, a site survey, and an order it refuses.
+- **Fly a whole mission from one prompt.** Arm, take off, fly the route, then land or come home.
+- **See through the camera.** Frames go straight to the model, so it can survey an area,
+  inspect something, or find what you asked for and photograph it.
+- **Work in a loop.** Fly, look, decide, fly again, until the task is done.
+- **Report what actually happened.** Every reply ends with state read from live telemetry, so
+  the agent tells you what the drone did, not what it was asked to do.
 
-One prompt, a whole sortie. It arms, takes off, flies the route, photographs what you asked it to
-photograph, and brings the aircraft home, speaking MAVLink to ArduPilot the whole way. You ask in
-plain English, it works the mission out before it moves, and when it is back on the ground it
-tells you what it actually did rather than what it was told to do.
+**[Watch the demo on YouTube](https://www.youtube.com/watch?v=pyfqyfYUces)**: a mission flown
+from one prompt, and a site survey.
 
-And when you tell it to switch your geofence off, it will not.
-
-That refusal is the point of the project. `set_param` hard-refuses every write to `FENCE_*`,
-raising or lowering, so a single chat message can never take a guardrail down. The two legitimate
-ways to change it both live outside the conversation: a real ground station, or restarting the
-server with `--allow-unsafe-params`.
+Flight tools are off until you pass `--enable-actuation`. Read [Safety](#safety) before you do.
 
 ## Architecture
 

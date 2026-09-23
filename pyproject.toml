@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mavlink-mcp"
 dynamic = ["version"]        # single-sourced from mavlink_mcp/__init__.py
-description = "MCP server for MAVLink drones: safety-gated flight tools and live camera frames for Claude, Codex and any MCP client. ArduPilot today, PX4 next."
+description = "MCP server that lets Claude, Codex or any MCP client fly ArduPilot missions and see through the drone camera. PX4 next."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
