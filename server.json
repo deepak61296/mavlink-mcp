@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.deepak61296/mavlink-mcp",
+  "title": "MAVLink MCP",
+  "description": "Let Claude, Codex or any MCP client fly ArduPilot drones over MAVLink, with camera vision.",
+  "repository": {
+    "url": "https://github.com/deepak61296/mavlink-mcp",
+    "source": "github"
+  },
+  "version": "0.1.6",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mavlink-mcp",
+      "version": "0.1.6",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "named", "name": "--enable-actuation", "description": "Allow flight tools (arm, takeoff, goto...). Off by default.", "isRequired": false }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,13 @@
 # mavlink-mcp
 
-An MCP server that lets an LLM agent fly an ArduPilot drone. Give Claude, Codex or any MCP
+[![PyPI](https://img.shields.io/pypi/v/mavlink-mcp)](https://pypi.org/project/mavlink-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/mavlink-mcp)](https://pypi.org/project/mavlink-mcp/)
+[![CI](https://github.com/deepak61296/mavlink-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/deepak61296/mavlink-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+<!-- mcp-name: io.github.deepak61296/mavlink-mcp -->
+
+A MAVLink MCP server that lets an LLM agent fly an ArduPilot drone. Give Claude, Codex or any MCP
 client a task in plain English, and it plans the mission, flies it, looks through the drone's
 camera and decides what to do next, all over MAVLink. Works against ArduPilot SITL, so you can
 try it with no hardware.
@@ -16,6 +23,8 @@ first SITL flight, with Claude Code or Codex.
 - **Work in a loop.** Fly, look, decide, fly again, until the task is done.
 - **Report what actually happened.** Every reply ends with state read from live telemetry, so
   the agent tells you what the drone did, not what it was asked to do.
+
+[![mavlink-mcp demo: a mission flown from one prompt, and a site survey](https://img.youtube.com/vi/pyfqyfYUces/maxresdefault.jpg)](https://www.youtube.com/watch?v=pyfqyfYUces)
 
 **[Watch the demo on YouTube](https://www.youtube.com/watch?v=pyfqyfYUces)**: a mission flown
 from one prompt, and a site survey.
